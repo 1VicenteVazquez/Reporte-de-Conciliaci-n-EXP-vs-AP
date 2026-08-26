@@ -1,7 +1,8 @@
 -- ============================================================
--- INDICADORES AGREGADOS - REPORTE CONCILIACION EXP vs AP (v8)
--- Actualizado con los 5 estados para que el Data Link en 
--- BI Publisher funcione correctamente con el Detalle.
+-- INDICADORES AGREGADOS - REPORTE CONCILIACION EXP vs AP
+-- ============================================================
+-- Requerimiento 1.5.6: Total conciliado, Total pendiente de
+-- migracion, Total observado -- desglosado por Unidad de Negocio
 -- ============================================================
 
 WITH exp_header AS (
