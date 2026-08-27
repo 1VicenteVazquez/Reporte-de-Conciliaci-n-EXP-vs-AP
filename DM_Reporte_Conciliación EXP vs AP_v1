@@ -8,14 +8,14 @@
 SELECT
     eh.expense_report_num,
     eh.expense_status_code                              AS estado_expenses,
-    eh.expense_report_date                              AS fecha_expenses,
+    TO_CHAR(eh.expense_report_date, 'DD/MM/YYYY')        AS fecha_expenses,  
     eh.expense_report_total                             AS monto_expenses,
     eh.reimbursement_currency_code                      AS moneda_expenses,
     co.full_name                                        AS colaborador,
     oh.name                                             AS unidad_negocio,
     mf.currency_code                                    AS moneda_funcional,
     ah.invoice_num,
-    ah.invoice_date                                     AS fecha_ap,
+    TO_CHAR(ah.invoice_date, 'DD/MM/YYYY')               AS fecha_ap,        
     ah.invoice_amount                                   AS monto_ap,
     ah.invoice_currency_code                            AS moneda_ap,
     CASE
@@ -30,22 +30,36 @@ SELECT
         ELSE NULL
     END                                                 AS estado_contabilizacion_ap,
     (eh.expense_report_total - NVL(ah.invoice_amount,0)) AS diferencia_valor,
-    
-    -- LOGICA DE 5 ESTADOS
+
+    -- INDICADOR DETALLADO (5 ESTADOS) -- se mantiene igual
     CASE
-        WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' 
+        WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED'
              THEN 'RECHAZADO'
-        WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 
+        WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01
              THEN 'CON DIFERENCIAS'
-        WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL 
+        WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL
              THEN 'CONTABILIZADO'
-        WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') 
+        WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT')
           OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL)
              THEN 'APROBADO'
         ELSE 'ENVIADO'
-    END                                                 AS indicador_conciliacion
+    END                                                 AS indicador_conciliacion,
 
-FROM 
+    -- ★ NUEVO: INDICADOR RESUMEN (3 CATEGORIAS) -- clave para el link con G_2
+    CASE
+        WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED'
+             THEN 'Total observado'
+        WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01
+             THEN 'Total observado'
+        WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL
+             THEN 'Total conciliado'
+        WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT')
+          OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL)
+             THEN 'Total pendiente de migración'
+        ELSE 'Total pendiente de migración'
+    END                                                 AS indicador_resumen
+
+FROM
     exm_expense_reports eh,
     ap_invoices_all ah,
     poz_suppliers_v pr,
@@ -53,7 +67,7 @@ FROM
     hr_all_organization_units_vl oh,
     fun_all_business_units_v bu,
     gl_ledgers mf
-WHERE 
+WHERE
     eh.expense_report_num = ah.invoice_num(+)
     AND ah.vendor_id = pr.vendor_id(+)
     AND eh.person_id = co.person_id(+)
@@ -62,16 +76,10 @@ WHERE
     AND eh.org_id = oh.organization_id
     AND oh.name = bu.bu_name(+)
     AND TO_NUMBER(bu.primary_ledger_id) = mf.ledger_id(+)
-    
-    -- 2. Filtro base de Región LAS estricto
     AND oh.name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
-    
-    -- 3. PARÁMETROS DE USUARIO (Con NVL para que si van vacíos no filtren de más)
     AND oh.name = NVL(:P_UNIDAD_NEGOCIO, oh.name)
     AND TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
     AND TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
-
-    -- 4. PARÁMETRO DE INDICADOR / ESTADO (Soporta selección de menú o vacío)
     AND (
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
@@ -80,7 +88,7 @@ WHERE
             WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) THEN 'APROBADO'
             ELSE 'ENVIADO'
         END
-    ) = NVL(:P_INDICADOR, 
+    ) = NVL(:P_INDICADOR,
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
             WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 THEN 'CON DIFERENCIAS'
