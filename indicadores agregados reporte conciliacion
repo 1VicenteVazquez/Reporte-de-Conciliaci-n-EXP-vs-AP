@@ -56,7 +56,7 @@ resumen AS (
     FROM detalle
 )
 SELECT
-    unidad_negocio         AS unidad_negocio,          
+    unidad_negocio         AS unidad_negocio,         
     indicador_resumen      AS indicador_resumen,       
     COUNT(*)                AS cantidad_documentos      
 FROM resumen
