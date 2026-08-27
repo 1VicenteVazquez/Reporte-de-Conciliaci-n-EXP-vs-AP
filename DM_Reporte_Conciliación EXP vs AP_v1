@@ -29,15 +29,10 @@ SELECT
     TO_CHAR(ah.invoice_date, 'DD/MM/YYYY')               AS fecha_ap,
     ah.invoice_amount                                   AS monto_ap,
     ah.invoice_currency_code                            AS moneda_ap,
-
-    -- PROVEEDOR REAL: viene de la linea de factura AP, no del
-    -- vendor_id de cabecera (que para reembolsos es un placeholder
-    -- generico -10016) ni del nombre del empleado.
     NVL(pf.merchant_name, 'Proveedor no identificado')  AS proveedor,
-
     NVL(ah.total_tax_amount, 0)                         AS impuesto_ap,
     ah.approval_status                                  AS estado_aprobacion_ap,
-    ah.amount_paid                                      AS importe_pagado,  
+    ah.amount_paid                                      AS importe_pagado,
     CASE
         WHEN ah.gl_date IS NOT NULL THEN 'CONTABILIZADO'
         WHEN ah.invoice_num IS NOT NULL THEN 'PENDIENTE DE CONTABILIZACION'
@@ -45,10 +40,15 @@ SELECT
     END                                                 AS estado_contabilizacion_ap,
     (eh.expense_report_total - NVL(ah.invoice_amount,0)) AS diferencia_valor,
 
-    -- INDICADOR DETALLADO (5 ESTADOS)
+    -- INDICADOR DETALLADO (6 ESTADOS)
     CASE
         WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED'
              THEN 'RECHAZADO'
+        -- hay diferencia, pero no hubo pago real -> NO PAGADA
+        WHEN ah.invoice_num IS NOT NULL
+             AND NVL(ah.amount_paid, 0) = 0
+             AND ABS(eh.expense_report_total - NVL(ah.invoice_amount,0)) > 0.01
+             THEN 'NO PAGADA'
         WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01
              THEN 'CON DIFERENCIAS'
         WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL
@@ -59,9 +59,13 @@ SELECT
         ELSE 'ENVIADO'
     END                                                 AS indicador_conciliacion,
 
-    -- INDICADOR RESUMEN (3 CATEGORIAS) -- clave para el link con G_2
+    -- INDICADOR RESUMEN (3 CATEGORIAS) -- NO PAGADA se agrupa en "Total observado"
     CASE
         WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED'
+             THEN 'Total observado'
+        WHEN ah.invoice_num IS NOT NULL
+             AND NVL(ah.amount_paid, 0) = 0
+             AND ABS(eh.expense_report_total - NVL(ah.invoice_amount,0)) > 0.01
              THEN 'Total observado'
         WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01
              THEN 'Total observado'
@@ -88,18 +92,17 @@ WHERE
     AND oh.name = bu.bu_name(+)
     AND TO_NUMBER(bu.primary_ledger_id) = mf.ledger_id(+)
 
-    -- Filtro base de Region LAS
     AND oh.name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
 
-    -- PARAMETROS DE USUARIO
     AND oh.name = NVL(:P_UNIDAD_NEGOCIO, oh.name)
     AND TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
     AND TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
 
-    -- PARAMETRO DE INDICADOR (5 estados)
+    -- PARAMETRO DE INDICADOR (6 estados) -- misma logica duplicada para el filtro
     AND (
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
+            WHEN ah.invoice_num IS NOT NULL AND NVL(ah.amount_paid, 0) = 0 AND ABS(eh.expense_report_total - NVL(ah.invoice_amount,0)) > 0.01 THEN 'NO PAGADA'
             WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 THEN 'CON DIFERENCIAS'
             WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL THEN 'CONTABILIZADO'
             WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) THEN 'APROBADO'
@@ -108,6 +111,7 @@ WHERE
     ) = NVL(:P_INDICADOR,
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
+            WHEN ah.invoice_num IS NOT NULL AND NVL(ah.amount_paid, 0) = 0 AND ABS(eh.expense_report_total - NVL(ah.invoice_amount,0)) > 0.01 THEN 'NO PAGADA'
             WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 THEN 'CON DIFERENCIAS'
             WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL THEN 'CONTABILIZADO'
             WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) THEN 'APROBADO'
