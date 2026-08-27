@@ -10,7 +10,7 @@ WITH exp_header AS (
         eer.expense_report_num,
         eer.expense_report_total,
         eer.expense_status_code,
-        eer.expense_report_date, -- Necesario para el filtro
+        eer.expense_report_date,
         eer.org_id
     FROM exm_expense_reports eer
 ),

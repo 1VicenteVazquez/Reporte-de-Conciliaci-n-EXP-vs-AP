@@ -63,16 +63,15 @@ WHERE
     AND oh.name = bu.bu_name(+)
     AND TO_NUMBER(bu.primary_ledger_id) = mf.ledger_id(+)
     
-    -- 1. Filtro base de Región LAS (Regla de negocio estricta)
+    -- 2. Filtro base de Región LAS estricto
     AND oh.name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
     
-    -- 2. PARAMETROS DE USUARIO (Nuevos)
+    -- 3. PARÁMETROS DE USUARIO (Con NVL para que si van vacíos no filtren de más)
     AND oh.name = NVL(:P_UNIDAD_NEGOCIO, oh.name)
     AND TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
     AND TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
 
-    -- 3. PARAMETROS DEL DATA LINK (Para que conecte con el resumen)
-    AND oh.name = NVL(:UNIDAD_NEGOCIO, oh.name)
+    -- 4. PARÁMETRO DE INDICADOR / ESTADO (Soporta selección de menú o vacío)
     AND (
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
@@ -81,7 +80,7 @@ WHERE
             WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) THEN 'APROBADO'
             ELSE 'ENVIADO'
         END
-    ) = NVL(:INDICADOR, 
+    ) = NVL(:P_INDICADOR, 
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
             WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 THEN 'CON DIFERENCIAS'
