@@ -38,19 +38,27 @@ detalle AS (
     FROM exp_header eh, ap_header ah, org_hr oh
     WHERE  ah.invoice_num (+)      = eh.expense_report_num
     AND    oh.organization_id (+)  = eh.org_id
-    
-    -- 1. Filtro base de Región LAS
     AND    oh.org_name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
-    
-    -- 2. PARAMETROS DE USUARIO
     AND oh.org_name = NVL(:P_UNIDAD_NEGOCIO, oh.org_name)
     AND TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
     AND TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
+),
+resumen AS (
+    SELECT
+        unidad_negocio,
+        CASE indicador
+            WHEN 'CONTABILIZADO'    THEN 'Total conciliado'
+            WHEN 'APROBADO'         THEN 'Total pendiente de migración'
+            WHEN 'ENVIADO'          THEN 'Total pendiente de migración'
+            WHEN 'CON DIFERENCIAS'  THEN 'Total observado'
+            WHEN 'RECHAZADO'        THEN 'Total observado'
+        END AS indicador_resumen
+    FROM detalle
 )
 SELECT
-    unidad_negocio,
-    indicador,
-    COUNT(*) AS cantidad
-FROM detalle
-GROUP BY unidad_negocio, indicador
-ORDER BY unidad_negocio, indicador
+    unidad_negocio         AS unidad_negocio,          
+    indicador_resumen      AS indicador_resumen,       
+    COUNT(*)                AS cantidad_documentos      
+FROM resumen
+GROUP BY unidad_negocio, indicador_resumen
+ORDER BY unidad_negocio, indicador_resumen
