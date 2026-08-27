@@ -11,3 +11,21 @@ SELECT
 FROM hr_all_organization_units_vl 
 WHERE name IN ('ARCAF', 'CLID', 'PEBPE', 'PYBPY', 'UYBUY')
 ORDER BY label;
+
+
+
+
+
+
+--LOV_UNIDADES_NEGOCIO
+SELECT 
+    'TODAS LAS UNIDADES' AS label, 
+    NULL AS value 
+FROM dual
+UNION ALL
+SELECT 
+    name AS label, 
+    name AS value 
+FROM hr_all_organization_units_vl 
+WHERE name IN ('ARCAF', 'CLID', 'PEBPE', 'PYBPY', 'UYBUY')
+ORDER BY label
