@@ -9,7 +9,8 @@ WITH exp_header AS (
     SELECT
         eer.expense_report_num,
         eer.expense_report_total,
-        eer.expense_status_code,  
+        eer.expense_status_code,
+        eer.expense_report_date, -- Necesario para el filtro
         eer.org_id
     FROM exm_expense_reports eer
 ),
@@ -17,7 +18,7 @@ ap_header AS (
     SELECT
         aia.invoice_num,
         aia.invoice_amount,
-        aia.gl_date              
+        aia.gl_date
     FROM ap_invoices_all aia
 ),
 org_hr AS (
@@ -27,25 +28,24 @@ org_hr AS (
 detalle AS (
     SELECT
         oh.org_name AS unidad_negocio,
-        
-        -- LA MISMA LOGICA DE 5 ESTADOS QUE EN EL DETALLE
         CASE
-            WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' 
-                 THEN 'RECHAZADO'
-            WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 
-                 THEN 'CON DIFERENCIAS'
-            WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL 
-                 THEN 'CONTABILIZADO'
-            WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') 
-              OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL)
-                 THEN 'APROBADO'
+            WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
+            WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 THEN 'CON DIFERENCIAS'
+            WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL THEN 'CONTABILIZADO'
+            WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) THEN 'APROBADO'
             ELSE 'ENVIADO'
         END AS indicador
-        
     FROM exp_header eh, ap_header ah, org_hr oh
     WHERE  ah.invoice_num (+)      = eh.expense_report_num
     AND    oh.organization_id (+)  = eh.org_id
+    
+    -- 1. Filtro base de Región LAS
     AND    oh.org_name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
+    
+    -- 2. PARAMETROS DE USUARIO
+    AND oh.org_name = NVL(:P_UNIDAD_NEGOCIO, oh.org_name)
+    AND TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
+    AND TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
 )
 SELECT
     unidad_negocio,
