@@ -31,7 +31,7 @@ SELECT
     END                                                 AS estado_contabilizacion_ap,
     (eh.expense_report_total - NVL(ah.invoice_amount,0)) AS diferencia_valor,
     
-    -- NUEVA LOGICA DE 5 ESTADOS
+    -- LOGICA DE 5 ESTADOS
     CASE
         WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' 
              THEN 'RECHAZADO'
@@ -54,26 +54,39 @@ FROM
     fun_all_business_units_v bu,
     gl_ledgers mf
 WHERE 
-    -- 1. Cruce principal Expenses con AP (LEFT JOIN = ah opcional)
     eh.expense_report_num = ah.invoice_num(+)
-
-    -- 2. Cruce AP con Proveedor (LEFT JOIN)
     AND ah.vendor_id = pr.vendor_id(+)
-
-    -- 3. Cruce Expenses con Colaborador (LEFT JOIN)
     AND eh.person_id = co.person_id(+)
-    AND co.name_type(+) = 'GLOBAL'                                          -- ajustar si aplica
+    AND co.name_type(+) = 'GLOBAL'
     AND TRUNC(SYSDATE) BETWEEN co.effective_start_date(+) AND co.effective_end_date(+)
-
-    -- 4. Cruce Expenses con Organizacion HR (INNER JOIN obligado por el filtro LAS)
     AND eh.org_id = oh.organization_id
-
-    -- 5. Cruce Org HR con Business Unit Financiera por NOMBRE (LEFT JOIN)
     AND oh.name = bu.bu_name(+)
-
-    -- 6. Cruce Business Unit con Ledgers para sacar la moneda (LEFT JOIN)
     AND TO_NUMBER(bu.primary_ledger_id) = mf.ledger_id(+)
+    
+    -- 1. Filtro base de Región LAS (Regla de negocio estricta)
+    AND oh.name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
+    
+    -- 2. PARAMETROS DE USUARIO (Nuevos)
+    AND oh.name = NVL(:P_UNIDAD_NEGOCIO, oh.name)
+    AND TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
+    AND TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
 
-    -- 7. Filtro de Region LAS (Regla de Negocio)
-    AND oh.name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY');   
-
+    -- 3. PARAMETROS DEL DATA LINK (Para que conecte con el resumen)
+    AND oh.name = NVL(:UNIDAD_NEGOCIO, oh.name)
+    AND (
+        CASE
+            WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
+            WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 THEN 'CON DIFERENCIAS'
+            WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL THEN 'CONTABILIZADO'
+            WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) THEN 'APROBADO'
+            ELSE 'ENVIADO'
+        END
+    ) = NVL(:INDICADOR, 
+        CASE
+            WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
+            WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 THEN 'CON DIFERENCIAS'
+            WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL THEN 'CONTABILIZADO'
+            WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) THEN 'APROBADO'
+            ELSE 'ENVIADO'
+        END
+    )
