@@ -59,7 +59,8 @@ SELECT
         ELSE 'ENVIADO'
     END                                                 AS indicador_conciliacion,
 
-    -- INDICADOR RESUMEN (3 CATEGORIAS) -- NO PAGADA se agrupa en "Total observado"
+    -- INDICADOR RESUMEN 
+    
     CASE
         WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED'
              THEN 'Total observado'
@@ -98,7 +99,7 @@ WHERE
     AND TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
     AND TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
 
-    -- PARAMETRO DE INDICADOR (6 estados) -- misma logica duplicada para el filtro
+    -- PARAMETRO DE INDICADOR 
     AND (
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' THEN 'RECHAZADO'
