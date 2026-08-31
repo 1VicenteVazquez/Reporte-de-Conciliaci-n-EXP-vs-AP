@@ -1,5 +1,5 @@
 -- ============================================================
--- DATA SET 2: INDICADORES AGREGADOS (KPIs) - V2
+-- DATA SET 2: INDICADORES AGREGADOS (KPIs) - V2 (Corregido)
 -- ============================================================
 -- Requerimiento: AN100.2 - Grupo Bimbo (Expenses)
 -- KPIs solicitados: Total conciliado, Total pendiente de migración, Total observado
@@ -26,10 +26,12 @@ org_hr AS (
     SELECT organization_id, name AS org_name
     FROM hr_all_organization_units_vl
 ),
-detalle AS (
+base_datos AS (
     SELECT
         oh.org_name AS unidad_negocio,
         eh.expense_report_total AS monto_expenses,
+        NVL(ah.amount_paid, 0) AS importe_pagado_ap,
+        (NVL(ah.invoice_amount, 0) - NVL(ah.amount_paid, 0)) AS importe_pendiente_ap,
         CASE
             WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' 
                  THEN 'OBSERVADO'
@@ -42,7 +44,7 @@ detalle AS (
             WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) 
                  THEN 'PENDIENTE DE MIGRACION'
             ELSE 'PENDIENTE DE MIGRACION'
-        END AS indicador_resumen
+        END AS resultado_conciliacion
     FROM exp_header eh, ap_header ah, org_hr oh
     WHERE ah.invoice_num (+)      = eh.expense_report_num
     AND   oh.organization_id (+)  = eh.org_id
@@ -51,13 +53,15 @@ detalle AS (
     AND   TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
     AND   TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
 )
-SELECT
-    unidad_negocio                        AS unidad_negocio,      
-    indicador_resumen                     AS indicador_resumen,   
-    COUNT(*)                              AS cantidad_documentos,
-    -- Agregamos la suma de importes para cubrir el Tema Abierto 11 del AN100.2
+SELECT 
+    unidad_negocio                        AS unidad_negocio, 
+    resultado_conciliacion                AS indicador_resumen, 
+    COUNT(*)                              AS cantidad_documentos, 
     SUM(monto_expenses)                   AS monto_total_expenses,
+    SUM(importe_pagado_ap)                AS monto_total_pagado_ap,
+    SUM(importe_pendiente_ap)             AS monto_total_pendiente_ap,
     'PENDIENTE VALIDAR MONEDA (TEMA 11)'  AS nota_moneda
-FROM detalle
-GROUP BY unidad_negocio, indicador_resumen
-ORDER BY unidad_negocio, indicador_resumen
+FROM base_datos 
+WHERE resultado_conciliacion = NVL(:P_RESULTADO_CONCILIACION, resultado_conciliacion)
+GROUP BY unidad_negocio, resultado_conciliacion
+ORDER BY unidad_negocio, resultado_conciliacion
