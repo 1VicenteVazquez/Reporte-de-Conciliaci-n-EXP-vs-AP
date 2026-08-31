@@ -57,6 +57,10 @@ base_datos AS (
         ah.invoice_num                                      AS documento_ref_ap,
         ah.approval_status                                  AS estado_ap,
         ah.invoice_amount                                   AS monto_ap,
+        
+        NVL(ah.amount_paid, 0)                              AS importe_pagado_ap,
+        (ah.invoice_amount - NVL(ah.amount_paid, 0))        AS importe_pendiente_ap,
+        
         'PENDIENTE VALIDAR BIMBO'                           AS monto_funcional_ap,
         ah.exchange_rate                                    AS tipo_cambio_ap,
         NVL(ah.total_tax_amount, 0)                         AS impuesto_ap,
