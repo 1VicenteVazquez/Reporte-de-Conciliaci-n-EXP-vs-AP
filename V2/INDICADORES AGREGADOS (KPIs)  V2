@@ -1,67 +1,85 @@
 -- ============================================================
--- DATA SET 2: INDICADORES AGREGADOS (KPIs) - V2 (Corregido)
+-- DATA SET 2: INDICADORES AGREGADOS (KPIS) - V2 (CORREGIDO)
 -- ============================================================
--- Requerimiento: AN100.2 - Grupo Bimbo (Expenses)
--- KPIs solicitados: Total conciliado, Total pendiente de migración, Total observado
+-- REQUERIMIENTO: AN100.2 - GRUPO BIMBO (EXPENSES)
+-- KPIS SOLICITADOS: TOTAL CONCILIADO, TOTAL PENDIENTE DE MIGRACION, TOTAL OBSERVADO
 -- ============================================================
 
-WITH exp_header AS (
+WITH EXP_HEADER AS (
     SELECT
-        eer.expense_report_num,
-        eer.expense_report_total,
-        eer.expense_status_code,
-        eer.expense_report_date,
-        eer.org_id
-    FROM exm_expense_reports eer
-),
-ap_header AS (
+         EER.EXPENSE_REPORT_NUM
+        ,EER.EXPENSE_REPORT_TOTAL
+        ,EER.EXPENSE_STATUS_CODE
+        ,EER.EXPENSE_REPORT_DATE
+        ,EER.ORG_ID
+    FROM 
+        EXM_EXPENSE_REPORTS                                  EER
+)
+,AP_HEADER AS (
     SELECT
-        aia.invoice_num,
-        aia.invoice_amount,
-        aia.gl_date,
-        aia.amount_paid
-    FROM ap_invoices_all aia
-),
-org_hr AS (
-    SELECT organization_id, name AS org_name
-    FROM hr_all_organization_units_vl
-),
-base_datos AS (
+         AIA.INVOICE_NUM
+        ,AIA.INVOICE_AMOUNT
+        ,AIA.GL_DATE
+        ,AIA.AMOUNT_PAID
+    FROM 
+        AP_INVOICES_ALL                                      AIA
+)
+,ORG_HR AS (
+    SELECT 
+         HAOUV.ORGANIZATION_ID
+        ,HAOUV.NAME                                          AS ORG_NAME
+    FROM 
+        HR_ALL_ORGANIZATION_UNITS_VL                         HAOUV
+)
+,BASE_DATOS AS (
     SELECT
-        oh.org_name AS unidad_negocio,
-        eh.expense_report_total AS monto_expenses,
-        NVL(ah.amount_paid, 0) AS importe_pagado_ap,
-        (NVL(ah.invoice_amount, 0) - NVL(ah.amount_paid, 0)) AS importe_pendiente_ap,
-        CASE
-            WHEN eh.expense_status_code LIKE '%REJECT%' OR eh.expense_status_code = 'RETURNED' 
+         OH.ORG_NAME                                         AS UNIDAD_NEGOCIO
+        ,EH.EXPENSE_REPORT_TOTAL                             AS MONTO_EXPENSES
+        ,NVL(AH.AMOUNT_PAID, 0)                              AS IMPORTE_PAGADO_AP
+        ,(NVL(AH.INVOICE_AMOUNT, 0) - NVL(AH.AMOUNT_PAID, 0)) AS IMPORTE_PENDIENTE_AP
+        ,CASE
+            WHEN EH.EXPENSE_STATUS_CODE LIKE '%REJECT%' OR EH.EXPENSE_STATUS_CODE = 'RETURNED' 
                  THEN 'OBSERVADO'
-            WHEN ah.invoice_num IS NOT NULL AND NVL(ah.amount_paid, 0) = 0 AND ABS(eh.expense_report_total - NVL(ah.invoice_amount,0)) > 0.01 
+            WHEN AH.INVOICE_NUM IS NOT NULL AND NVL(AH.AMOUNT_PAID, 0) = 0 
+            AND ABS(EH.EXPENSE_REPORT_TOTAL - NVL(AH.INVOICE_AMOUNT,0)) > 0.01 
                  THEN 'OBSERVADO'
-            WHEN ah.invoice_num IS NOT NULL AND ABS(eh.expense_report_total - ah.invoice_amount) > 0.01 
+            WHEN AH.INVOICE_NUM IS NOT NULL 
+            AND ABS(EH.EXPENSE_REPORT_TOTAL - AH.INVOICE_AMOUNT) > 0.01 
                  THEN 'OBSERVADO'
-            WHEN ah.invoice_num IS NOT NULL AND ah.gl_date IS NOT NULL 
+            WHEN AH.INVOICE_NUM IS NOT NULL 
+            AND AH.GL_DATE IS NOT NULL 
                  THEN 'CONCILIADO'
-            WHEN eh.expense_status_code IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (ah.invoice_num IS NOT NULL AND ah.gl_date IS NULL) 
+            WHEN EH.EXPENSE_STATUS_CODE IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (AH.INVOICE_NUM IS NOT NULL AND AH.GL_DATE IS NULL) 
                  THEN 'PENDIENTE DE MIGRACION'
             ELSE 'PENDIENTE DE MIGRACION'
-        END AS resultado_conciliacion
-    FROM exp_header eh, ap_header ah, org_hr oh
-    WHERE ah.invoice_num (+)      = eh.expense_report_num
-    AND   oh.organization_id (+)  = eh.org_id
-    AND   oh.org_name IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
-    AND   oh.org_name = NVL(:P_UNIDAD_NEGOCIO, oh.org_name)
-    AND   TRUNC(eh.expense_report_date) >= NVL(:P_FECHA_DESDE, TRUNC(eh.expense_report_date))
-    AND   TRUNC(eh.expense_report_date) <= NVL(:P_FECHA_HASTA, TRUNC(eh.expense_report_date))
+        END                                                  AS RESULTADO_CONCILIACION
+    FROM 
+         EXP_HEADER                                          EH
+        ,AP_HEADER                                           AH
+        ,ORG_HR                                              OH
+    WHERE 
+        AH.INVOICE_NUM (+) = EH.EXPENSE_REPORT_NUM
+    AND OH.ORGANIZATION_ID (+) = EH.ORG_ID
+    AND OH.ORG_NAME IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
+    AND OH.ORG_NAME = NVL(:P_UNIDAD_NEGOCIO, OH.ORG_NAME)
+    AND TRUNC(EH.EXPENSE_REPORT_DATE) >= NVL(:P_FECHA_DESDE, TRUNC(EH.EXPENSE_REPORT_DATE))
+    AND TRUNC(EH.EXPENSE_REPORT_DATE) <= NVL(:P_FECHA_HASTA, TRUNC(EH.EXPENSE_REPORT_DATE))
 )
 SELECT 
-    unidad_negocio                        AS unidad_negocio, 
-    resultado_conciliacion                AS indicador_resumen, 
-    COUNT(*)                              AS cantidad_documentos, 
-    SUM(monto_expenses)                   AS monto_total_expenses,
-    SUM(importe_pagado_ap)                AS monto_total_pagado_ap,
-    SUM(importe_pendiente_ap)             AS monto_total_pendiente_ap,
-    'PENDIENTE VALIDAR MONEDA (TEMA 11)'  AS nota_moneda
-FROM base_datos 
-WHERE resultado_conciliacion = NVL(:P_RESULTADO_CONCILIACION, resultado_conciliacion)
-GROUP BY unidad_negocio, resultado_conciliacion
-ORDER BY unidad_negocio, resultado_conciliacion
+     UNIDAD_NEGOCIO                                          AS UNIDAD_NEGOCIO
+    ,RESULTADO_CONCILIACION                                  AS INDICADOR_RESUMEN
+    ,COUNT(*)                                                AS CANTIDAD_DOCUMENTOS
+    ,SUM(MONTO_EXPENSES)                                     AS MONTO_TOTAL_EXPENSES
+    ,SUM(IMPORTE_PAGADO_AP)                                  AS MONTO_TOTAL_PAGADO_AP
+    ,SUM(IMPORTE_PENDIENTE_AP)                               AS MONTO_TOTAL_PENDIENTE_AP
+    ,'PENDIENTE VALIDAR MONEDA (TEMA 11)'                    AS NOTA_MONEDA
+FROM 
+    BASE_DATOS 
+WHERE 
+    RESULTADO_CONCILIACION = NVL(:P_RESULTADO_CONCILIACION, RESULTADO_CONCILIACION)
+GROUP BY 
+     UNIDAD_NEGOCIO
+    ,RESULTADO_CONCILIACION
+ORDER BY 
+     UNIDAD_NEGOCIO
+    ,RESULTADO_CONCILIACION
