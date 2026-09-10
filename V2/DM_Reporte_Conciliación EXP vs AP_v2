@@ -32,49 +32,59 @@ WITH PROVEEDOR_POR_FACTURA AS (
 ,ADELANTOS_POR_INFORME AS (
     SELECT
          ECAA.EXPENSE_REPORT_ID
-        ,SUM(ECAA.AMOUNT)                                    AS TOTAL_ADELANTO_APLICADO
+        ,SUM(ECAA.AMOUNT)                                    TOTAL_ADELANTO_APLICADO
     FROM 
         EXM_CASH_ADV_APPLICATIONS                            ECAA
     GROUP BY 
         ECAA.EXPENSE_REPORT_ID
 )
+,LINEAS_PADRE_EXCLUIR AS (
+    -- EXPENSE_ID que actuan como padre de itemizacion y por lo tanto NO deben mostrarse (Fusion los oculta en pantalla; solo se ven las hijas)
+    SELECT DISTINCT ITEMIZATION_PARENT_EXPENSE_ID AS EXPENSE_ID_PADRE
+    FROM EXM_EXPENSES
+    WHERE ITEMIZATION_PARENT_EXPENSE_ID IS NOT NULL
+    AND ITEMIZATION_PARENT_EXPENSE_ID != -1
+    UNION
+    SELECT DISTINCT MERGED_PARENT_EXPENSE_ID AS EXPENSE_ID_PADRE
+    FROM EXM_EXPENSES
+    WHERE MERGED_PARENT_EXPENSE_ID IS NOT NULL
+    AND MERGED_PARENT_EXPENSE_ID != -1
+)
 ,BASE_DATOS AS (
     SELECT
         -- ===================== CABECERA =====================
-         EER.EXPENSE_REPORT_ID
-        ,HAOUV.NAME                                          AS UNIDAD_NEGOCIO
-        ,EER.EXPENSE_REPORT_NUM                              AS NUM_REPORTE_GASTOS
-        ,PPNF.FULL_NAME                                      AS COLABORADOR
-        ,EER.PERSON_ID                                       AS COLABORADOR_ID
-        ,EER.EXPENSE_STATUS_CODE                             AS ESTADO_EXPENSES
-        ,TO_CHAR(EER.EXPENSE_REPORT_DATE, 'DD/MM/YYYY')      AS FECHA_REPORTE
-        ,NVL(PPF.MERCHANT_NAME, 'PROVEEDOR NO IDENTIFICADO') AS PROVEEDOR_COMERCIANTE
-        ,CCPG.CODE_COMBINATION_ID                            AS CUENTA_CONTABLE
-        ,EER.REIMBURSEMENT_CURRENCY_CODE                     AS MONEDA_INTRODUCIDA
-        ,EER.EXPENSE_REPORT_TOTAL                            AS MONTO_EXPENSES
-        ,GL.CURRENCY_CODE                                    AS MONEDA_FUNCIONAL
+         HAOUV.NAME                                             UNIDAD_NEGOCIO
+        ,EER.EXPENSE_REPORT_NUM                                 NUM_REPORTE_GASTOS
+        ,PPNF.FULL_NAME                                         COLABORADOR
+        ,EER.EXPENSE_STATUS_CODE                                ESTADO_EXPENSES
+        ,TO_CHAR(EER.EXPENSE_REPORT_DATE, 'DD/MM/YYYY')         FECHA_REPORTE
+        ,NVL(PPF.MERCHANT_NAME, 'PROVEEDOR NO IDENTIFICADO')    PROVEEDOR_COMERCIANTE
+        ,CCPG.CODE_COMBINATION_ID                               CUENTA_CONTABLE
+        ,EER.REIMBURSEMENT_CURRENCY_CODE                        MONEDA_INTRODUCIDA
+        ,EER.EXPENSE_REPORT_TOTAL                               MONTO_EXPENSES
+        ,GL.CURRENCY_CODE                                       MONEDA_FUNCIONAL
         
-        ,'PENDIENTE VALIDAR BIMBO'                           AS MONTO_FUNCIONAL_EXP
-        ,'PENDIENTE VALIDAR BIMBO'                           AS TIPO_CAMBIO_EXP
-        ,'PENDIENTE VALIDAR BIMBO'                           AS IMPUESTO_EXP
-
+        ,'PENDIENTE VALIDAR BIMBO'                              MONTO_FUNCIONAL_EXP
+        ,'PENDIENTE VALIDAR BIMBO'                              TIPO_CAMBIO_EXP
+        ,'PENDIENTE VALIDAR BIMBO'                              IMPUESTO_EXP
+ 
         -- ===================== AP =====================
-        ,AIA.INVOICE_NUM                                     AS DOCUMENTO_REF_AP
-        ,AIA.APPROVAL_STATUS                                 AS ESTADO_AP
-        ,AIA.INVOICE_AMOUNT                                  AS MONTO_AP
+        ,AIA.INVOICE_NUM                                        DOCUMENTO_REF_AP
+        ,AIA.APPROVAL_STATUS                                    ESTADO_AP
+        ,AIA.INVOICE_AMOUNT                                     MONTO_AP
         
-        ,NVL(AIA.AMOUNT_PAID, 0)                             AS IMPORTE_PAGADO_AP
-        ,(AIA.INVOICE_AMOUNT - NVL(AIA.AMOUNT_PAID, 0))      AS IMPORTE_PENDIENTE_AP
+        ,NVL(AIA.AMOUNT_PAID, 0)                                IMPORTE_PAGADO_AP
+        ,(AIA.INVOICE_AMOUNT - NVL(AIA.AMOUNT_PAID, 0))         IMPORTE_PENDIENTE_AP
         
-        ,'PENDIENTE VALIDAR BIMBO'                           AS MONTO_FUNCIONAL_AP
-        ,AIA.EXCHANGE_RATE                                   AS TIPO_CAMBIO_AP
-        ,NVL(AIA.TOTAL_TAX_AMOUNT, 0)                        AS IMPUESTO_AP
+        ,'PENDIENTE VALIDAR BIMBO'                              MONTO_FUNCIONAL_AP
+        ,AIA.EXCHANGE_RATE                                      TIPO_CAMBIO_AP
+        ,NVL(AIA.TOTAL_TAX_AMOUNT, 0)                           IMPUESTO_AP
         
         -- ===================== DIFERENCIAS =====================
-        ,(EER.EXPENSE_REPORT_TOTAL - NVL(AIA.INVOICE_AMOUNT,0)) AS DIFERENCIA_VALOR
-        ,'PENDIENTE VALIDAR TOLERANCIA BIMBO'                   AS DIFERENCIA_TIPO_CAMBIO
-        ,'PENDIENTE VALIDAR FORMULA BIMBO'                      AS DIFERENCIA_IMPUESTOS
-
+        ,(EER.EXPENSE_REPORT_TOTAL - NVL(AIA.INVOICE_AMOUNT,0)) DIFERENCIA_VALOR
+        ,'PENDIENTE VALIDAR TOLERANCIA BIMBO'                   DIFERENCIA_TIPO_CAMBIO
+        ,'PENDIENTE VALIDAR FORMULA BIMBO'                      DIFERENCIA_IMPUESTOS
+ 
         -- ===================== INDICADOR (TEMA 03, 04, 11) =====================
         ,CASE
             WHEN EER.EXPENSE_STATUS_CODE LIKE '%REJECT%' OR EER.EXPENSE_STATUS_CODE = 'RETURNED'
@@ -91,19 +101,17 @@ WITH PROVEEDOR_POR_FACTURA AS (
               OR (AIA.INVOICE_NUM IS NOT NULL AND AIA.GL_DATE IS NULL)
                  THEN 'PENDIENTE DE MIGRACION'
             ELSE 'PENDIENTE DE MIGRACION'
-        END                                                 AS RESULTADO_CONCILIACION
-
+        END                                                 RESULTADO_CONCILIACION
+ 
         -- ===================== OTROS DATOS Y LINEA =====================
-        ,PAPF.PERSON_NUMBER                                  AS NUMERO_EMPLEADO
-        ,XEP.NAME                                            AS ENTIDAD_JURIDICA
-        ,EE.EXPENSE_ID                                       
+        ,XEP.NAME                                           ENTIDAD_JURIDICA
         ,ROW_NUMBER() OVER (
             PARTITION BY EE.EXPENSE_REPORT_ID 
             ORDER BY EE.EXPENSE_ID
-        )                                                    AS NUMERO_LINEA
-        ,EE.JUSTIFICATION                                    AS DESCRIPCION_GASTO
-        ,TO_CHAR(EE.RECEIPT_DATE, 'DD/MM/YYYY')              AS FECHA_COMPROBANTE
-        ,EE.REIMBURSABLE_AMOUNT                              AS IMPORTE_LINEA
+        )                                                    NUMERO_LINEA
+        ,EE.DESCRIPTION                                      DESCRIPCION_GASTO
+        ,TO_CHAR(EE.RECEIPT_DATE, 'DD/MM/YYYY')              FECHA_COMPROBANTE
+        ,EE.REIMBURSABLE_AMOUNT                              IMPORTE_LINEA
     FROM
          EXM_EXPENSE_REPORTS                                 EER
         ,EXM_EXPENSES                                        EE
@@ -120,6 +128,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
     WHERE
         EER.EXPENSE_REPORT_NUM = AIA.INVOICE_NUM(+)
         AND EER.EXPENSE_REPORT_ID = EE.EXPENSE_REPORT_ID
+        AND EE.EXPENSE_ID NOT IN (SELECT EXPENSE_ID_PADRE FROM LINEAS_PADRE_EXCLUIR)
         AND AIA.INVOICE_ID = PPF.INVOICE_ID(+) 
         AND PPF.RN(+) = 1
         AND EE.EXPENSE_ID = CCPG.EXPENSE_ID(+) 
@@ -136,12 +145,12 @@ WITH PROVEEDOR_POR_FACTURA AS (
         AND HAOUV.NAME = FABUV.BU_NAME(+)
         AND TO_NUMBER(FABUV.PRIMARY_LEDGER_ID) = GL.LEDGER_ID(+)
         AND TO_NUMBER(FABUV.LEGAL_ENTITY_ID) = XEP.LEGAL_ENTITY_ID(+)                       
-        AND TRUNC(SYSDATE) BETWEEN XEP.EFFECTIVE_FROM(+) AND XEP.EFFECTIVE_TO(+)         
+        AND TRUNC(SYSDATE) BETWEEN NVL(XEP.EFFECTIVE_FROM(+), TO_DATE('01/01/1900','DD/MM/YYYY')) 
+                        AND NVL(XEP.EFFECTIVE_TO(+), TO_DATE('31/12/4712','DD/MM/YYYY'))      
         AND HAOUV.NAME IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
         
-        -- -------------------------------------------------------------
         -- APLICACION DE FILTROS 1 AL 4 Y 6 (DIRECTOS A LAS TABLAS BASE)
-        -- -------------------------------------------------------------
+
         AND HAOUV.NAME = NVL(:P_UNIDAD_NEGOCIO, HAOUV.NAME)
         AND TRUNC(EER.EXPENSE_REPORT_DATE) >= NVL(:P_FECHA_DESDE, TRUNC(EER.EXPENSE_REPORT_DATE))
         AND TRUNC(EER.EXPENSE_REPORT_DATE) <= NVL(:P_FECHA_HASTA, TRUNC(EER.EXPENSE_REPORT_DATE))
@@ -150,8 +159,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
         AND EER.REIMBURSEMENT_CURRENCY_CODE = NVL(:P_MONEDA, EER.REIMBURSEMENT_CURRENCY_CODE)
         AND (UPPER(PPF.MERCHANT_NAME) LIKE '%' || UPPER(:P_PROVEEDOR) || '%' OR :P_PROVEEDOR IS NULL)
 )
--- -------------------------------------------------------------
+
 -- APLICACION DE FILTRO 5 (RESULTADO DE CONCILIACION)
--- -------------------------------------------------------------
 SELECT * FROM BASE_DATOS
 WHERE RESULTADO_CONCILIACION = NVL(:P_RESULTADO_CONCILIACION, RESULTADO_CONCILIACION)

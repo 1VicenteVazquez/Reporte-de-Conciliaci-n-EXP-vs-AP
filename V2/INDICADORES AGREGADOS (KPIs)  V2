@@ -27,16 +27,16 @@ WITH EXP_HEADER AS (
 ,ORG_HR AS (
     SELECT 
          HAOUV.ORGANIZATION_ID
-        ,HAOUV.NAME                                          AS ORG_NAME
+        ,HAOUV.NAME                                          ORG_NAME
     FROM 
         HR_ALL_ORGANIZATION_UNITS_VL                         HAOUV
 )
 ,BASE_DATOS AS (
     SELECT
-         OH.ORG_NAME                                         AS UNIDAD_NEGOCIO
-        ,EH.EXPENSE_REPORT_TOTAL                             AS MONTO_EXPENSES
-        ,NVL(AH.AMOUNT_PAID, 0)                              AS IMPORTE_PAGADO_AP
-        ,(NVL(AH.INVOICE_AMOUNT, 0) - NVL(AH.AMOUNT_PAID, 0)) AS IMPORTE_PENDIENTE_AP
+         OH.ORG_NAME                                         UNIDAD_NEGOCIO
+        ,EH.EXPENSE_REPORT_TOTAL                             MONTO_EXPENSES
+        ,NVL(AH.AMOUNT_PAID, 0)                              IMPORTE_PAGADO_AP
+        ,(NVL(AH.INVOICE_AMOUNT, 0) - NVL(AH.AMOUNT_PAID, 0)) IMPORTE_PENDIENTE_AP
         ,CASE
             WHEN EH.EXPENSE_STATUS_CODE LIKE '%REJECT%' OR EH.EXPENSE_STATUS_CODE = 'RETURNED' 
                  THEN 'OBSERVADO'
@@ -52,7 +52,7 @@ WITH EXP_HEADER AS (
             WHEN EH.EXPENSE_STATUS_CODE IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') OR (AH.INVOICE_NUM IS NOT NULL AND AH.GL_DATE IS NULL) 
                  THEN 'PENDIENTE DE MIGRACION'
             ELSE 'PENDIENTE DE MIGRACION'
-        END                                                  AS RESULTADO_CONCILIACION
+        END                                                  RESULTADO_CONCILIACION
     FROM 
          EXP_HEADER                                          EH
         ,AP_HEADER                                           AH
@@ -66,13 +66,12 @@ WITH EXP_HEADER AS (
     AND TRUNC(EH.EXPENSE_REPORT_DATE) <= NVL(:P_FECHA_HASTA, TRUNC(EH.EXPENSE_REPORT_DATE))
 )
 SELECT 
-     UNIDAD_NEGOCIO                                          AS UNIDAD_NEGOCIO
-    ,RESULTADO_CONCILIACION                                  AS INDICADOR_RESUMEN
-    ,COUNT(*)                                                AS CANTIDAD_DOCUMENTOS
-    ,SUM(MONTO_EXPENSES)                                     AS MONTO_TOTAL_EXPENSES
-    ,SUM(IMPORTE_PAGADO_AP)                                  AS MONTO_TOTAL_PAGADO_AP
-    ,SUM(IMPORTE_PENDIENTE_AP)                               AS MONTO_TOTAL_PENDIENTE_AP
-    ,'PENDIENTE VALIDAR MONEDA (TEMA 11)'                    AS NOTA_MONEDA
+     UNIDAD_NEGOCIO                                          UNIDAD_NEGOCIO
+    ,RESULTADO_CONCILIACION                                  INDICADOR_RESUMEN
+    ,COUNT(*)                                                CANTIDAD_DOCUMENTOS
+    ,SUM(MONTO_EXPENSES)                                     MONTO_TOTAL_EXPENSES
+    ,SUM(IMPORTE_PAGADO_AP)                                  MONTO_TOTAL_PAGADO_AP
+    ,SUM(IMPORTE_PENDIENTE_AP)                               MONTO_TOTAL_PENDIENTE_AP
 FROM 
     BASE_DATOS 
 WHERE 
