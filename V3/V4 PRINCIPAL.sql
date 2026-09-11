@@ -86,6 +86,11 @@ WITH PROVEEDOR_POR_FACTURA AS (
          ,EE.DESCRIPTION                                            DESCRIPCION_GASTO
          ,TO_CHAR(EE.RECEIPT_DATE, 'DD/MM/YYYY')                    FECHA_COMPROBANTE
          ,EE.REIMBURSABLE_AMOUNT                                    IMPORTE_LINEA
+         ,ET.NAME                                                    TIPO_GASTO                    -- #9 CONFIRMADO
+         ,PS.VENDOR_NAME                                             PROVEEDOR_AP                  -- #13 CONFIRMADO
+         ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')                    FECHA_FACTURA_AP               -- #15 CONFIRMADO
+         ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')                         FECHA_CONTABLE_AP              -- #16 CONFIRMADO
+         ,EE.EXCHANGE_RATE                                           TIPO_CAMBIO_EXP                -- #21 CONFIRMADO
     FROM
           EXM_EXPENSE_REPORTS                   EER
          ,EXM_EXPENSES                          EE
@@ -99,6 +104,8 @@ WITH PROVEEDOR_POR_FACTURA AS (
          ,FUN_ALL_BUSINESS_UNITS_V              FABUV
          ,XLE_ENTITY_PROFILES                   XEP
          ,GL_LEDGERS                            GL
+         ,EXM_EXPENSE_TYPES                     ET      -- #9
+         ,POZ_SUPPLIERS_V                       PS      -- #13
     WHERE
         EER.EXPENSE_REPORT_NUM = AIA.INVOICE_NUM(+)
         AND EER.EXPENSE_REPORT_ID = EE.EXPENSE_REPORT_ID
@@ -130,6 +137,8 @@ WITH PROVEEDOR_POR_FACTURA AS (
         AND EER.EXPENSE_STATUS_CODE = NVL(:P_ESTADO_EXPENSES, EER.EXPENSE_STATUS_CODE)
         AND EER.REIMBURSEMENT_CURRENCY_CODE = NVL(:P_MONEDA, EER.REIMBURSEMENT_CURRENCY_CODE)
         AND (UPPER(PPF.MERCHANT_NAME) LIKE '%' || UPPER(:P_PROVEEDOR) || '%' OR :P_PROVEEDOR IS NULL)
+        AND EE.EXPENSE_TYPE_ID = ET.EXPENSE_TYPE_ID(+)        -- #9
+        AND AIA.VENDOR_ID = PS.VENDOR_ID(+)                    -- #13
 )
 SELECT * FROM BASE_DATOS
 WHERE RESULTADO_CONCILIACION = NVL(:P_RESULTADO_CONCILIACION, RESULTADO_CONCILIACION)
