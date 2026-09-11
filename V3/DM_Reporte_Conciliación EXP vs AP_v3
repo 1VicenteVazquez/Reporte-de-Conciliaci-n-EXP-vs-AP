@@ -1,0 +1,256 @@
+-- ============================================================
+-- DATA SET 1: DETALLE DE CONCILIACION EXPENSES VS AP (V3.0)
+-- ============================================================
+-- REQUERIMIENTO: AN100.2 - GRUPO BIMBO (EXPENSES) - REGION LAS
+-- GRANULARIDAD: 1 FILA POR DISTRIBUCION DE GASTO (EXM_EXPENSE_DISTS)
+-- RELACIONADA CONTRA SU DISTRIBUCION TIPO 'ITEM' EQUIVALENTE EN AP.
+-- ============================================================
+
+WITH LINEAS_PADRE_EXCLUIR AS (
+    -- EXPENSE_ID que actuan como padre de itemizacion/fusion y no deben mostrarse
+    SELECT DISTINCT ITEMIZATION_PARENT_EXPENSE_ID AS EXPENSE_ID_PADRE
+    FROM EXM_EXPENSES
+    WHERE ITEMIZATION_PARENT_EXPENSE_ID IS NOT NULL
+    AND ITEMIZATION_PARENT_EXPENSE_ID != -1
+    UNION
+    SELECT DISTINCT MERGED_PARENT_EXPENSE_ID AS EXPENSE_ID_PADRE
+    FROM EXM_EXPENSES
+    WHERE MERGED_PARENT_EXPENSE_ID IS NOT NULL
+    AND MERGED_PARENT_EXPENSE_ID != -1
+)
+,PROVEEDOR_POR_FACTURA AS (
+    -- NOMBRE COMERCIANTE CAPTURADO EN EXPENSES, IMPORTADO A LA LINEA DE FACTURA AP
+    SELECT
+         AILA.INVOICE_ID
+        ,AILA.MERCHANT_NAME
+        ,ROW_NUMBER() OVER (
+            PARTITION BY AILA.INVOICE_ID
+            ORDER BY AILA.AMOUNT DESC NULLS LAST
+        ) AS RN
+    FROM 
+        AP_INVOICE_LINES_ALL                                 AILA
+    WHERE 
+        AILA.MERCHANT_NAME IS NOT NULL
+)
+,EXP_DIST_BASE AS (
+    -- DISTRIBUCION DE GASTO CON SU LINEA PADRE, VALIDADO CON EED.EXPENSE_DIST_ID
+    SELECT
+         EE.EXPENSE_REPORT_ID
+        ,EE.EXPENSE_ID
+        ,EE.RECEIPT_DATE
+        ,EE.DESCRIPTION
+        ,EE.EXPENSE_TYPE                                     -- PENDIENTE VALIDAR: columna no confirmada aun
+        ,EE.RECEIPT_CURRENCY_CODE
+        ,EE.EXCHANGE_RATE
+        ,EE.ORIG_EXCHANGE_RATE
+        ,EE.FUNC_CURRENCY_AMOUNT
+        ,EE.TAX_CLASSIFICATION_CODE
+        ,EED.EXPENSE_DIST_ID
+        ,EED.CODE_COMBINATION_ID
+        ,EED.REIMBURSABLE_AMOUNT
+    FROM
+         EXM_EXPENSES      EE
+        ,EXM_EXPENSE_DISTS EED
+    WHERE
+         EE.EXPENSE_ID = EED.EXPENSE_ID
+    AND  EE.EXPENSE_ID NOT IN (SELECT EXPENSE_ID_PADRE FROM LINEAS_PADRE_EXCLUIR)
+)
+,EXP_DIST_RANKEADA AS (
+    -- RANKEO PARA EMPAREJAR CONTRA AP CUANDO HAY MISMA CUENTA/IMPORTE REPETIDO EN EL MISMO INFORME
+    SELECT
+         EDB.EXPENSE_REPORT_ID
+        ,EDB.EXPENSE_ID
+        ,EDB.RECEIPT_DATE
+        ,EDB.DESCRIPTION
+        ,EDB.EXPENSE_TYPE
+        ,EDB.RECEIPT_CURRENCY_CODE
+        ,EDB.EXCHANGE_RATE
+        ,EDB.ORIG_EXCHANGE_RATE
+        ,EDB.FUNC_CURRENCY_AMOUNT
+        ,EDB.TAX_CLASSIFICATION_CODE
+        ,EDB.EXPENSE_DIST_ID
+        ,EDB.CODE_COMBINATION_ID
+        ,EDB.REIMBURSABLE_AMOUNT
+        ,ROW_NUMBER() OVER (
+            PARTITION BY EDB.EXPENSE_REPORT_ID, EDB.CODE_COMBINATION_ID, EDB.REIMBURSABLE_AMOUNT
+            ORDER BY EDB.EXPENSE_DIST_ID
+        ) RN_MATCH
+    FROM EXP_DIST_BASE EDB
+)
+,AP_LINEA_AGRUPADA AS (
+    -- AGRUPA LAS DISTRIBUCIONES AP POR LINEA DE FACTURA, SEPARANDO ITEM DE IMPUESTO
+    -- (VALIDADO: UNA LINEA DE FACTURA GENERA ITEM + REC_TAX + NONREC_TAX)
+    SELECT
+         AIDA.INVOICE_ID
+        ,AIDA.INVOICE_LINE_NUMBER
+        ,SUM(CASE WHEN AIDA.LINE_TYPE_LOOKUP_CODE = 'ITEM' THEN AIDA.AMOUNT ELSE 0 END)              MONTO_AP_LINEA
+        ,MAX(CASE WHEN AIDA.LINE_TYPE_LOOKUP_CODE = 'ITEM' THEN AIDA.DIST_CODE_COMBINATION_ID END)   CUENTA_CONTABLE_AP_LINEA
+        ,SUM(CASE WHEN AIDA.LINE_TYPE_LOOKUP_CODE IN ('REC_TAX','NONREC_TAX') THEN AIDA.AMOUNT ELSE 0 END) IMPUESTO_AP_LINEA
+    FROM
+         AP_INVOICE_DISTRIBUTIONS_ALL AIDA
+    GROUP BY
+         AIDA.INVOICE_ID
+        ,AIDA.INVOICE_LINE_NUMBER
+)
+,AP_LINEA_RANKEADA AS (
+    SELECT
+         ALA.INVOICE_ID
+        ,ALA.INVOICE_LINE_NUMBER
+        ,ALA.MONTO_AP_LINEA
+        ,ALA.CUENTA_CONTABLE_AP_LINEA
+        ,ALA.IMPUESTO_AP_LINEA
+        ,ROW_NUMBER() OVER (
+            PARTITION BY ALA.INVOICE_ID, ALA.CUENTA_CONTABLE_AP_LINEA, ALA.MONTO_AP_LINEA
+            ORDER BY ALA.INVOICE_LINE_NUMBER
+        ) RN_MATCH
+    FROM AP_LINEA_AGRUPADA ALA
+)
+,BASE_DATOS AS (
+    SELECT
+        -- ===================== ORGANIZACION =====================
+         XEP.NAME                                            RAZON_SOCIAL
+        ,HAOUV.NAME                                           UNIDAD_NEGOCIO
+
+        -- ===================== COLABORADOR / CABECERA =====================
+        ,PPNF.FULL_NAME                                       COLABORADOR
+        ,EER.EXPENSE_REPORT_NUM                                NUM_REPORTE_GASTOS
+        ,EER.EXPENSE_STATUS_CODE                               ESTADO_EXPENSES
+        ,TO_CHAR(EER.CREATION_DATE, 'DD/MM/YYYY')              FECHA_CREACION_REPORTE
+        ,TO_CHAR(EER.EXPENSE_REPORT_DATE, 'DD/MM/YYYY')        FECHA_REPORTE
+
+        -- ===================== LINEA DE GASTO =====================
+        ,ROW_NUMBER() OVER (
+            PARTITION BY EDR.EXPENSE_REPORT_ID 
+            ORDER BY EDR.EXPENSE_ID, EDR.EXPENSE_DIST_ID
+        )                                                     NUMERO_LINEA
+        ,EDR.EXPENSE_TYPE                                      TIPO_GASTO
+        ,EDR.DESCRIPTION                                       DESCRIPCION_GASTO
+        ,TO_CHAR(EDR.RECEIPT_DATE, 'DD/MM/YYYY')               FECHA_COMPROBANTE
+        ,NVL(PPF.MERCHANT_NAME, 'PROVEEDOR NO IDENTIFICADO')   PROVEEDOR_COMERCIANTE_EXP
+
+        -- ===================== AP - DOCUMENTO =====================
+        ,AIA.INVOICE_NUM                                       DOCUMENTO_REF_AP
+        ,AOSV.VENDOR_NAME                                      PROVEEDOR_AP
+        ,AIA.APPROVAL_STATUS                                   ESTADO_AP
+        ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')               FECHA_FACTURA_AP
+        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')                    FECHA_CONTABLE_AP
+
+        -- ===================== MONEDA / IMPORTE INTRODUCIDO =====================
+        ,EDR.RECEIPT_CURRENCY_CODE                             MONEDA_INTRODUCIDA_EXP
+        ,EDR.REIMBURSABLE_AMOUNT                               IMPORTE_LINEA_EXP
+        ,ALR.MONTO_AP_LINEA                                    IMPORTE_LINEA_AP
+        ,(EDR.REIMBURSABLE_AMOUNT - NVL(ALR.MONTO_AP_LINEA,0)) DIFERENCIA_IMPORTE_INTRODUCIDO
+
+        -- ===================== TIPO DE CAMBIO =====================
+        ,EDR.EXCHANGE_RATE                                     TIPO_CAMBIO_EXP
+        ,AIA.EXCHANGE_RATE                                     TIPO_CAMBIO_AP
+        ,'PENDIENTE VALIDAR TOLERANCIA BIMBO'                  DIFERENCIA_TIPO_CAMBIO
+
+        -- ===================== MONEDA FUNCIONAL =====================
+        ,GL.CURRENCY_CODE                                      MONEDA_FUNCIONAL
+        ,EDR.FUNC_CURRENCY_AMOUNT                              IMPORTE_FUNCIONAL_EXP
+        ,'PENDIENTE VALIDAR BIMBO'                              IMPORTE_FUNCIONAL_AP
+        ,'PENDIENTE VALIDAR BIMBO'                              DIFERENCIA_MONEDA_FUNCIONAL
+
+        -- ===================== IMPUESTOS =====================
+        ,EDR.TAX_CLASSIFICATION_CODE                           CODIGO_IMPUESTO_EXP
+        ,'PENDIENTE VALIDAR BIMBO'                              IMPORTE_IMPUESTO_EXP
+        ,ALR.IMPUESTO_AP_LINEA                                 IMPORTE_IMPUESTO_AP
+        ,'PENDIENTE VALIDAR BIMBO'                              DIFERENCIA_IMPUESTOS
+
+        -- ===================== CUENTA CONTABLE =====================
+        ,EDR.CODE_COMBINATION_ID                               CUENTA_CONTABLE_EXP
+        ,ALR.CUENTA_CONTABLE_AP_LINEA                          CUENTA_CONTABLE_AP
+        ,CASE
+            WHEN ALR.CUENTA_CONTABLE_AP_LINEA IS NULL THEN 'SIN AP RELACIONADO'
+            WHEN EDR.CODE_COMBINATION_ID = ALR.CUENTA_CONTABLE_AP_LINEA THEN 'SIN DIFERENCIA'
+            ELSE 'DIFERENTE'
+         END                                                   DIFERENCIA_CUENTA_CONTABLE
+
+        -- ===================== INDICADOR DE CONCILIACION =====================
+        ,CASE
+            WHEN EER.EXPENSE_STATUS_CODE LIKE '%REJECT%' OR EER.EXPENSE_STATUS_CODE = 'RETURNED'
+                 THEN 'OBSERVADO'
+            WHEN AIA.INVOICE_NUM IS NOT NULL AND ALR.MONTO_AP_LINEA IS NULL
+                 THEN 'OBSERVADO'
+            WHEN AIA.INVOICE_NUM IS NOT NULL 
+                 AND ABS(EDR.REIMBURSABLE_AMOUNT - NVL(ALR.MONTO_AP_LINEA,0)) > 0.01 
+                 THEN 'OBSERVADO'
+            WHEN AIA.INVOICE_NUM IS NOT NULL 
+                 AND EDR.CODE_COMBINATION_ID != ALR.CUENTA_CONTABLE_AP_LINEA
+                 THEN 'OBSERVADO'
+            WHEN AIA.INVOICE_NUM IS NOT NULL AND AIA.GL_DATE IS NOT NULL
+                 THEN 'CONCILIADO'
+            WHEN EER.EXPENSE_STATUS_CODE IN ('READY_FOR_PAYMENT', 'APPROVED', 'PENDING_PAYMENT') 
+              OR (AIA.INVOICE_NUM IS NOT NULL AND AIA.GL_DATE IS NULL)
+                 THEN 'PENDIENTE DE MIGRACION'
+            ELSE 'PENDIENTE DE MIGRACION'
+        END                                                 RESULTADO_CONCILIACION
+
+    FROM
+         EXM_EXPENSE_REPORTS                                 EER
+        ,EXP_DIST_RANKEADA                                   EDR
+        ,AP_INVOICES_ALL                                     AIA
+        ,AP_LINEA_RANKEADA                                   ALR
+        ,PROVEEDOR_POR_FACTURA                               PPF
+        ,AP_OFR_SUPPLIERS_V                                  AOSV
+        ,PER_PERSON_NAMES_F                                  PPNF
+        ,PER_ALL_PEOPLE_F                                    PAPF
+        ,HR_ALL_ORGANIZATION_UNITS_VL                        HAOUV
+        ,FUN_ALL_BUSINESS_UNITS_V                            FABUV
+        ,XLE_ENTITY_PROFILES                                 XEP
+        ,GL_LEDGERS                                          GL
+    WHERE
+        EER.EXPENSE_REPORT_ID = EDR.EXPENSE_REPORT_ID
+
+        AND EER.EXPENSE_REPORT_NUM = AIA.INVOICE_NUM(+)
+        AND AIA.SOURCE(+) IN ('EMP_EXPENSE_REPORT','CC_EXPENSE_REPORT','CWK_EXPENSE_REPORT')
+
+        AND AIA.INVOICE_ID = ALR.INVOICE_ID(+)
+        AND EDR.CODE_COMBINATION_ID = ALR.CUENTA_CONTABLE_AP_LINEA(+)
+        AND EDR.REIMBURSABLE_AMOUNT = ALR.MONTO_AP_LINEA(+)
+        AND EDR.RN_MATCH = ALR.RN_MATCH(+)
+
+        AND AIA.INVOICE_ID = PPF.INVOICE_ID(+) 
+        AND PPF.RN(+) = 1
+
+        AND AIA.VENDOR_ID = AOSV.VENDOR_ID(+)
+
+        AND EER.PERSON_ID = PPNF.PERSON_ID(+)
+        AND PPNF.NAME_TYPE(+) = 'GLOBAL'
+        AND TRUNC(SYSDATE) BETWEEN PPNF.EFFECTIVE_START_DATE(+) 
+        AND PPNF.EFFECTIVE_END_DATE(+)
+
+        AND EER.PERSON_ID = PAPF.PERSON_ID(+)                                              
+        AND TRUNC(SYSDATE) BETWEEN PAPF.EFFECTIVE_START_DATE(+) 
+        AND PAPF.EFFECTIVE_END_DATE(+) 
+
+        AND EER.ORG_ID = HAOUV.ORGANIZATION_ID
+        AND HAOUV.NAME = FABUV.BU_NAME(+)
+        AND TO_NUMBER(FABUV.PRIMARY_LEDGER_ID) = GL.LEDGER_ID(+)
+        AND TO_NUMBER(FABUV.LEGAL_ENTITY_ID) = XEP.LEGAL_ENTITY_ID(+)                       
+        AND TRUNC(SYSDATE) BETWEEN NVL(XEP.EFFECTIVE_FROM(+), TO_DATE('01/01/1900','DD/MM/YYYY')) 
+                        AND NVL(XEP.EFFECTIVE_TO(+), TO_DATE('31/12/4712','DD/MM/YYYY'))      
+
+        AND HAOUV.NAME IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
+
+        -- ===================== PARAMETROS DE EJECUCION =====================
+        AND (INSTR(':'||:P_RAZON_SOCIAL||':', ':'||XEP.NAME||':') > 0 OR :P_RAZON_SOCIAL IS NULL)
+        AND (INSTR(':'||:P_UNIDAD_NEGOCIO||':', ':'||HAOUV.NAME||':') > 0 OR :P_UNIDAD_NEGOCIO IS NULL)
+
+        AND TRUNC(EER.EXPENSE_REPORT_DATE) >= :P_FECHA_DESDE
+        AND TRUNC(EER.EXPENSE_REPORT_DATE) <= :P_FECHA_HASTA
+
+        AND (UPPER(EER.EXPENSE_REPORT_NUM) LIKE '%'||UPPER(:P_NUM_INFORME_GASTOS)||'%' OR :P_NUM_INFORME_GASTOS IS NULL)
+
+        AND EER.PERSON_ID = NVL(:P_COLABORADOR_ID, EER.PERSON_ID) 
+
+        AND (INSTR(':'||:P_ESTADO_EXPENSES||':', ':'||EER.EXPENSE_STATUS_CODE||':') > 0 OR :P_ESTADO_EXPENSES IS NULL)
+        AND (INSTR(':'||:P_ESTADO_AP||':', ':'||NVL(AIA.APPROVAL_STATUS,'SIN_AP')||':') > 0 OR :P_ESTADO_AP IS NULL)
+
+        -- PENDIENTE VALIDAR: negocio debe confirmar si busca por segmento natural (texto) o por CCID
+        AND ( :P_CUENTA_CONTABLE IS NULL 
+              OR EDR.CODE_COMBINATION_ID = TO_NUMBER(:P_CUENTA_CONTABLE) 
+              OR ALR.CUENTA_CONTABLE_AP_LINEA = TO_NUMBER(:P_CUENTA_CONTABLE) )
+)
+SELECT * FROM BASE_DATOS
