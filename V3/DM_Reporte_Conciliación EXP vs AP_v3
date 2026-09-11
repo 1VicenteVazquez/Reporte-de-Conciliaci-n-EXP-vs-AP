@@ -15,12 +15,17 @@ WITH PROVEEDOR_POR_FACTURA AS (
     SELECT
          EED.EXPENSE_ID
         ,EED.CODE_COMBINATION_ID
+        ,GCC.SEGMENT1 || '.' || GCC.SEGMENT2 || '.' || GCC.SEGMENT3 || '.' || GCC.SEGMENT4 
+                                                            COMBINACION_CONTABLE_EXP_TXT
         ,ROW_NUMBER() OVER (
             PARTITION BY EED.EXPENSE_ID
             ORDER BY EED.REIMBURSABLE_AMOUNT DESC NULLS LAST
         ) AS RN
     FROM 
         EXM_EXPENSE_DISTS                                   EED
+        ,GL_CODE_COMBINATIONS                               GCC
+    WHERE
+        EED.CODE_COMBINATION_ID = GCC.CODE_COMBINATION_ID(+)
 )
 ,ADELANTOS_POR_INFORME AS (
     SELECT
@@ -108,7 +113,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
         ,IAP.TAX_CODE_ID                                    CODIGO_DE_IMPUESTO_AP         -- #28
         ,NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0)                  IMPORTE_IMPUESTO_AP           -- #29
         ,(NVL(0, 0) - NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0))     DIFERENCIA_IMPUESTO           -- #30
-        ,CCPG.CODE_COMBINATION_ID                           COMBINACION_CONTABLE_EXP_ID   -- #31
+        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                  COMBINACION_CONTABLE_EXP      -- #31 (ajustado: ahora texto legible)
         ,DAP.COMBINACION_CONTABLE_AP_TXT                    COMBINACION_CONTABLE_AP       -- #32
         ,CASE 
             WHEN CCPG.CODE_COMBINATION_ID IS NOT NULL 
@@ -182,7 +187,12 @@ WITH PROVEEDOR_POR_FACTURA AS (
         -- Parámetro Oficial: Estado AP
         AND (AIA.APPROVAL_STATUS = NVL(:P_ESTADO_AP, AIA.APPROVAL_STATUS) OR (:P_ESTADO_AP IS NULL AND AIA.APPROVAL_STATUS IS NULL))
         -- Parámetro Oficial: Cuenta Contable
-        AND (CCPG.CODE_COMBINATION_ID = NVL(:P_CUENTA_CONTABLE, CCPG.CODE_COMBINATION_ID) OR :P_CUENTA_CONTABLE IS NULL)
+        AND (CCPG.CODE_COMBINATION_ID = NVL(
+                CASE WHEN REGEXP_LIKE(:P_CUENTA_CONTABLE, '^[0-9]+$') 
+                    THEN TO_NUMBER(:P_CUENTA_CONTABLE) 
+                END, 
+                CCPG.CODE_COMBINATION_ID)
+            OR :P_CUENTA_CONTABLE IS NULL)
         -- Joins complementarios de tipos y proveedores
         AND EE.EXPENSE_TYPE_ID = ET.EXPENSE_TYPE_ID(+)
         AND AIA.VENDOR_ID = PS.VENDOR_ID(+)
