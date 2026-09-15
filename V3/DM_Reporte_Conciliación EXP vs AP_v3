@@ -63,15 +63,27 @@ WITH PROVEEDOR_POR_FACTURA AS (
          AID.DIST_CODE_COMBINATION_ID = GCC.CODE_COMBINATION_ID(+)
         AND AID.LINE_TYPE_LOOKUP_CODE IN ('REC_TAX', 'NONREC_TAX')
 )
+,IMPUESTOS_AP AS (
+    SELECT
+        TRX_ID,
+        TRX_LINE_NUMBER,
+        MAX(TAX) AS TAX_CODE,
+        SUM(TAX_AMT) AS TOTAL_TAX_AMOUNT_REAL,
+        SUM(TAX_AMT_FUNCL_CURR) AS TOTAL_TAX_AMOUNT_FUNCL
+    FROM ZX_LINES
+    WHERE APPLICATION_ID = 200 
+      AND ENTITY_CODE = 'AP_INVOICES'
+    GROUP BY TRX_ID, TRX_LINE_NUMBER
+)
 ,IMPUESTOS_AP_AGREGADOS AS (
     SELECT
-         INVOICE_ID
-        ,MAX(TAX_CODE_ID) AS TAX_CODE_ID
-        ,SUM(TAX_AMOUNT) AS TOTAL_TAX_AMOUNT_REAL
+         TRX_ID
+        ,MAX(TAX_CODE) AS TAX_CODE_ID
+        ,SUM(TOTAL_TAX_AMOUNT_REAL) AS TOTAL_TAX_AMOUNT_REAL
     FROM
-        DISTRIBUCIONES_AP
+        IMPUESTOS_AP
     GROUP BY
-        INVOICE_ID
+        TRX_ID
 )
 ,BASE_DATOS AS (
     SELECT
@@ -87,14 +99,14 @@ WITH PROVEEDOR_POR_FACTURA AS (
         )                                                  LINEA_DE_GASTO            
         ,TO_CHAR(EE.RECEIPT_DATE, 'DD/MM/YYYY')            FECHA_DEL_GASTO_LINEA     
         ,ET.NAME                                           TIPO_DE_GASTO             
-        ,EE.DESCRIPTION                                    DESCRIPCION_DEL_GASTO     
+        ,EE.DESCRIPTION                                    DESCRIPCION_DEL_GASTO    
         ,NVL(PPF.MERCHANT_NAME, 'PROVEEDOR NO IDENTIFICADO') 
                                                            NOMBRE_COMERCIANTE_PROVEEDOR_EXP  
         ,AIA.INVOICE_NUM                                   NUMERO_DE_FACTURA_AP      
         ,PS.VENDOR_NAME                                    PROVEEDOR_AP              
         ,AIA.APPROVAL_STATUS                               ESTADO_FACTURA_AP         
         ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')           FECHA_FACTURA_AP          
-        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')                FECHA_CONTABLE_AP         
+        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')                FECHA_CONTABLE_AP        
         ,EER.REIMBURSEMENT_CURRENCY_CODE                   MONEDA_INTRODUCIDA_EXP    
         ,EER.EXPENSE_REPORT_TOTAL                          IMPORTE_EXP_MONEDA_INTRODUCIDA
         ,AIA.INVOICE_AMOUNT                                IMPORTE_AP_MONEDA_INTRODUCIDA 
@@ -113,7 +125,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
         ,IAP.TAX_CODE_ID                                   CODIGO_DE_IMPUESTO_AP     
         ,NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0)                 IMPORTE_IMPUESTO_AP       
         ,(NVL(0, 0) - NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0))   DIFERENCIA_IMPUESTO       
-        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                 COMBINACION_CONTABLE_EXP  
+        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                 COMBINACION_CONTABLE_EXP 
         ,DAP.COMBINACION_CONTABLE_AP_TXT                   COMBINACION_CONTABLE_AP   
         ,CASE 
             WHEN CCPG.CODE_COMBINATION_ID IS NOT NULL 
@@ -127,11 +139,12 @@ WITH PROVEEDOR_POR_FACTURA AS (
              AND DAP.DIST_CODE_COMBINATION_ID IS NOT NULL 
             THEN 'SIN_CUENTA_EXP'
             ELSE 'IGUAL'
-         END                                               DIFERENCIA_CUENTA_CONTABLE    
+         END                                               DIFERENCIA_CUENTA_CONTABLE   
     FROM
          EXM_EXPENSE_REPORTS                           EER
         ,EXM_EXPENSES                                  EE
         ,AP_INVOICES_ALL                               AIA
+        ,AP_INVOICE_LINES_ALL                          APIL
         ,PROVEEDOR_POR_FACTURA                         PPF
         ,CUENTA_CONTABLE_POR_GASTO                     CCPG
         ,ADELANTOS_POR_INFORME                         API
@@ -152,6 +165,8 @@ WITH PROVEEDOR_POR_FACTURA AS (
             SELECT EXPENSE_ID_PADRE 
             FROM LINEAS_PADRE_EXCLUIR
         )
+        AND AIA.INVOICE_ID = APIL.INVOICE_ID(+)
+        AND APIL.REFERENCE_KEY2(+) = EE.EXPENSE_ID
         AND AIA.INVOICE_ID = PPF.INVOICE_ID(+) 
         AND PPF.RN(+) = 1
         AND EE.EXPENSE_ID = CCPG.EXPENSE_ID(+) 
@@ -171,9 +186,9 @@ WITH PROVEEDOR_POR_FACTURA AS (
         AND TRUNC(SYSDATE) BETWEEN NVL(XEP.EFFECTIVE_FROM(+), TO_DATE('01/01/1900','DD/MM/YYYY')) 
                                 AND NVL(XEP.EFFECTIVE_TO(+), TO_DATE('31/12/4712','DD/MM/YYYY'))      
         AND HAOUV.NAME IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
-        -- Parámetro Oficial: Razón Social 
+        -- Parámetro Oficial: Razón Social (multiple selection corregido)
         AND ( LEAST(:P_RAZON_SOCIAL) IS NULL OR XEP.NAME IN (:P_RAZON_SOCIAL) )
-        -- Parámetro Oficial: Unidad de Negocio 
+        -- Parámetro Oficial: Unidad de Negocio (multiple selection corregido)
         AND ( LEAST(:P_UNIDAD_NEGOCIO) IS NULL OR HAOUV.NAME IN (:P_UNIDAD_NEGOCIO) )
         -- Parámetros Oficiales: Fechas Desde / Hasta
         AND TRUNC(EER.EXPENSE_REPORT_DATE) >= NVL(:P_FECHA_DESDE, TRUNC(EER.EXPENSE_REPORT_DATE))
@@ -198,7 +213,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
         AND AIA.VENDOR_ID = PS.VENDOR_ID(+)
         AND AIA.INVOICE_ID = DAP.INVOICE_ID(+)
         AND DAP.INVOICE_LINE_NUMBER(+) = 1
-        AND AIA.INVOICE_ID = IAP.INVOICE_ID(+)
+        AND AIA.INVOICE_ID = IAP.TRX_ID(+)
 )
 SELECT * 
 FROM BASE_DATOS
