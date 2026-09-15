@@ -1,3 +1,7 @@
+--------------------------------------------------------------------------------
+-- Reporte de Conciliación EXPENSES vs AP - v4
+--------------------------------------------------------------------------------
+
 WITH PROVEEDOR_POR_FACTURA AS (
     SELECT
          AILA.INVOICE_ID
@@ -97,7 +101,8 @@ WITH PROVEEDOR_POR_FACTURA AS (
             PARTITION BY EE.EXPENSE_REPORT_ID 
             ORDER BY EE.EXPENSE_ID
         )                                                  LINEA_DE_GASTO            
-        ,TO_CHAR(EE.RECEIPT_DATE, 'DD/MM/YYYY')            FECHA_DEL_GASTO_LINEA     
+        ,TO_CHAR(COALESCE(EE.RECEIPT_DATE, EE.START_DATE), 'DD/MM/YYYY')            
+                                                           FECHA_DEL_GASTO_LINEA     
         ,ET.NAME                                           TIPO_DE_GASTO             
         ,EE.DESCRIPTION                                    DESCRIPCION_DEL_GASTO    
         ,NVL(PPF.MERCHANT_NAME, 'PROVEEDOR NO IDENTIFICADO') 
