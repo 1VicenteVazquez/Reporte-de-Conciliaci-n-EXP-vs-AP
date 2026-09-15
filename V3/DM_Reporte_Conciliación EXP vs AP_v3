@@ -16,7 +16,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
          EED.EXPENSE_ID
         ,EED.CODE_COMBINATION_ID
         ,GCC.SEGMENT1 || '.' || GCC.SEGMENT2 || '.' || GCC.SEGMENT3 || '.' || GCC.SEGMENT4 
-                                                            COMBINACION_CONTABLE_EXP_TXT
+                                                                   COMBINACION_CONTABLE_EXP_TXT
         ,ROW_NUMBER() OVER (
             PARTITION BY EED.EXPENSE_ID
             ORDER BY EED.REIMBURSABLE_AMOUNT DESC NULLS LAST
@@ -30,7 +30,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
 ,ADELANTOS_POR_INFORME AS (
     SELECT
          ECAA.EXPENSE_REPORT_ID
-        ,SUM(ECAA.AMOUNT) AS                                   TOTAL_ADELANTO_APLICADO
+        ,SUM(ECAA.AMOUNT) AS                                 TOTAL_ADELANTO_APLICADO
     FROM 
         EXM_CASH_ADV_APPLICATIONS ECAA
     GROUP BY 
@@ -75,46 +75,46 @@ WITH PROVEEDOR_POR_FACTURA AS (
 )
 ,BASE_DATOS AS (
     SELECT
-         XEP.NAME                                           RAZON_SOCIAL                  -- #1
-        ,HAOUV.NAME                                         UNIDAD_NEGOCIO                -- #2
-        ,PPNF.FULL_NAME                                     NOMBRE_DEL_EMPLEADO           -- #3
-        ,EER.EXPENSE_REPORT_NUM                             NUM_INFORME_DE_GASTOS         -- #4
-        ,EER.EXPENSE_STATUS_CODE                            ESTADO_DEL_INFORME            -- #5
-        ,TO_CHAR(EER.FINAL_APPROVAL_DATE, 'DD/MM/YYYY')     FECHA_DE_CREACION             -- #6
+         XEP.NAME                                          RAZON_SOCIAL              
+        ,HAOUV.NAME                                        UNIDAD_NEGOCIO            
+        ,PPNF.FULL_NAME                                    NOMBRE_DEL_EMPLEADO       
+        ,EER.EXPENSE_REPORT_NUM                            NUM_INFORME_DE_GASTOS     
+        ,EER.EXPENSE_STATUS_CODE                           ESTADO_DEL_INFORME        
+        ,TO_CHAR(EER.FINAL_APPROVAL_DATE, 'DD/MM/YYYY')    FECHA_DE_CREACION         
         ,ROW_NUMBER() OVER (
             PARTITION BY EE.EXPENSE_REPORT_ID 
             ORDER BY EE.EXPENSE_ID
-        )                                                   LINEA_DE_GASTO                -- #7
-        ,TO_CHAR(EE.RECEIPT_DATE, 'DD/MM/YYYY')             FECHA_DEL_GASTO_LINEA         -- #8
-        ,ET.NAME                                            TIPO_DE_GASTO                 -- #9
-        ,EE.DESCRIPTION                                     DESCRIPCION_DEL_GASTO         -- #10
+        )                                                  LINEA_DE_GASTO            
+        ,TO_CHAR(EE.RECEIPT_DATE, 'DD/MM/YYYY')            FECHA_DEL_GASTO_LINEA     
+        ,ET.NAME                                           TIPO_DE_GASTO             
+        ,EE.DESCRIPTION                                    DESCRIPCION_DEL_GASTO     
         ,NVL(PPF.MERCHANT_NAME, 'PROVEEDOR NO IDENTIFICADO') 
-                                                            NOMBRE_COMERCIANTE_PROVEEDOR_EXP  -- #11
-        ,AIA.INVOICE_NUM                                    NUMERO_DE_FACTURA_AP          -- #12
-        ,PS.VENDOR_NAME                                     PROVEEDOR_AP                  -- #13
-        ,AIA.APPROVAL_STATUS                                ESTADO_FACTURA_AP             -- #14
-        ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')            FECHA_FACTURA_AP              -- #15
-        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')                 FECHA_CONTABLE_AP             -- #16
-        ,EER.REIMBURSEMENT_CURRENCY_CODE                    MONEDA_INTRODUCIDA_EXP        -- #17
-        ,EER.EXPENSE_REPORT_TOTAL                           IMPORTE_EXP_MONEDA_INTRODUCIDA-- #18
-        ,AIA.INVOICE_AMOUNT                                 IMPORTE_AP_MONEDA_INTRODUCIDA -- #19
+                                                           NOMBRE_COMERCIANTE_PROVEEDOR_EXP  
+        ,AIA.INVOICE_NUM                                   NUMERO_DE_FACTURA_AP      
+        ,PS.VENDOR_NAME                                    PROVEEDOR_AP              
+        ,AIA.APPROVAL_STATUS                               ESTADO_FACTURA_AP         
+        ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')           FECHA_FACTURA_AP          
+        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')                FECHA_CONTABLE_AP         
+        ,EER.REIMBURSEMENT_CURRENCY_CODE                   MONEDA_INTRODUCIDA_EXP    
+        ,EER.EXPENSE_REPORT_TOTAL                          IMPORTE_EXP_MONEDA_INTRODUCIDA
+        ,AIA.INVOICE_AMOUNT                                IMPORTE_AP_MONEDA_INTRODUCIDA 
         ,(EER.EXPENSE_REPORT_TOTAL - NVL(AIA.INVOICE_AMOUNT,0)) 
-                                                            DIFERENCIA_MONEDA_INTRODUCIDA -- #20
-        ,EE.EXCHANGE_RATE                                   TIPO_DE_CAMBIO                -- #21
-        ,GL.CURRENCY_CODE                                   MONEDA_FUNCIONAL              -- #22
+                                                           DIFERENCIA_MONEDA_INTRODUCIDA 
+        ,EE.EXCHANGE_RATE                                  TIPO_DE_CAMBIO            
+        ,GL.CURRENCY_CODE                                  MONEDA_FUNCIONAL          
         ,EER.EXPENSE_REPORT_TOTAL * NVL(EE.EXCHANGE_RATE,1) 
-                                                            IMPORTE_EXP_MONEDA_FUNCIONAL  -- #23
-        ,AIA.INVOICE_AMOUNT * NVL(AIA.EXCHANGE_RATE,1)      IMPORTE_AP_MONEDA_FUNCIONAL   -- #24
+                                                           IMPORTE_EXP_MONEDA_FUNCIONAL  
+        ,AIA.INVOICE_AMOUNT * NVL(AIA.EXCHANGE_RATE,1)     IMPORTE_AP_MONEDA_FUNCIONAL   
         ,(EER.EXPENSE_REPORT_TOTAL * NVL(EE.EXCHANGE_RATE,1) 
-          - AIA.INVOICE_AMOUNT * NVL(AIA.EXCHANGE_RATE,1)) 
-                                                            DIFERENCIA_MONEDA_FUNCIONAL   -- #25
-        ,EE.TAX_CLASSIFICATION_CODE                         CODIGO_DE_IMPUESTO_EXP        -- #26
-        ,CAST(NULL AS NUMBER)                               IMPORTE_IMPUESTO_EXP          -- #27
-        ,IAP.TAX_CODE_ID                                    CODIGO_DE_IMPUESTO_AP         -- #28
-        ,NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0)                  IMPORTE_IMPUESTO_AP           -- #29
-        ,(NVL(0, 0) - NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0))     DIFERENCIA_IMPUESTO           -- #30
-        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                  COMBINACION_CONTABLE_EXP      -- #31 
-        ,DAP.COMBINACION_CONTABLE_AP_TXT                    COMBINACION_CONTABLE_AP       -- #32
+         - AIA.INVOICE_AMOUNT * NVL(AIA.EXCHANGE_RATE,1)) 
+                                                           DIFERENCIA_MONEDA_FUNCIONAL   
+        ,EE.TAX_CLASSIFICATION_CODE                        CODIGO_DE_IMPUESTO_EXP    
+        ,CAST(NULL AS NUMBER)                              IMPORTE_IMPUESTO_EXP      
+        ,IAP.TAX_CODE_ID                                   CODIGO_DE_IMPUESTO_AP     
+        ,NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0)                 IMPORTE_IMPUESTO_AP       
+        ,(NVL(0, 0) - NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0))   DIFERENCIA_IMPUESTO       
+        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                 COMBINACION_CONTABLE_EXP  
+        ,DAP.COMBINACION_CONTABLE_AP_TXT                   COMBINACION_CONTABLE_AP   
         ,CASE 
             WHEN CCPG.CODE_COMBINATION_ID IS NOT NULL 
              AND DAP.DIST_CODE_COMBINATION_ID IS NOT NULL 
@@ -127,7 +127,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
              AND DAP.DIST_CODE_COMBINATION_ID IS NOT NULL 
             THEN 'SIN_CUENTA_EXP'
             ELSE 'IGUAL'
-         END                                                DIFERENCIA_CUENTA_CONTABLE    -- #33
+         END                                               DIFERENCIA_CUENTA_CONTABLE    
     FROM
          EXM_EXPENSE_REPORTS                           EER
         ,EXM_EXPENSES                                  EE
@@ -161,20 +161,20 @@ WITH PROVEEDOR_POR_FACTURA AS (
         AND PPNF.NAME_TYPE(+) = 'GLOBAL'
         AND TRUNC(SYSDATE) BETWEEN PPNF.EFFECTIVE_START_DATE(+) 
         AND PPNF.EFFECTIVE_END_DATE(+)
-        AND EER.PERSON_ID = PAPF.PERSON_ID(+)                                                                     
+        AND EER.PERSON_ID = PAPF.PERSON_ID(+)                                                                                                                                 
         AND TRUNC(SYSDATE) BETWEEN PAPF.EFFECTIVE_START_DATE(+) 
         AND PAPF.EFFECTIVE_END_DATE(+) 
         AND EER.ORG_ID = HAOUV.ORGANIZATION_ID
         AND HAOUV.NAME = FABUV.BU_NAME(+)
         AND TO_NUMBER(FABUV.PRIMARY_LEDGER_ID) = GL.LEDGER_ID(+)
-        AND TO_NUMBER(FABUV.LEGAL_ENTITY_ID) = XEP.LEGAL_ENTITY_ID(+)                                                                     
+        AND TO_NUMBER(FABUV.LEGAL_ENTITY_ID) = XEP.LEGAL_ENTITY_ID(+)                                                                                                                                 
         AND TRUNC(SYSDATE) BETWEEN NVL(XEP.EFFECTIVE_FROM(+), TO_DATE('01/01/1900','DD/MM/YYYY')) 
                                 AND NVL(XEP.EFFECTIVE_TO(+), TO_DATE('31/12/4712','DD/MM/YYYY'))      
         AND HAOUV.NAME IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
-        -- Parámetro Oficial: Razón Social
-        AND (XEP.NAME = NVL(:P_RAZON_SOCIAL, XEP.NAME) OR :P_RAZON_SOCIAL IS NULL)
-        -- Parámetro Oficial: Unidad de Negocio
-        AND HAOUV.NAME = NVL(:P_UNIDAD_NEGOCIO, HAOUV.NAME)
+        -- Parámetro Oficial: Razón Social 
+        AND ( LEAST(:P_RAZON_SOCIAL) IS NULL OR XEP.NAME IN (:P_RAZON_SOCIAL) )
+        -- Parámetro Oficial: Unidad de Negocio 
+        AND ( LEAST(:P_UNIDAD_NEGOCIO) IS NULL OR HAOUV.NAME IN (:P_UNIDAD_NEGOCIO) )
         -- Parámetros Oficiales: Fechas Desde / Hasta
         AND TRUNC(EER.EXPENSE_REPORT_DATE) >= NVL(:P_FECHA_DESDE, TRUNC(EER.EXPENSE_REPORT_DATE))
         AND TRUNC(EER.EXPENSE_REPORT_DATE) <= NVL(:P_FECHA_HASTA, TRUNC(EER.EXPENSE_REPORT_DATE))
