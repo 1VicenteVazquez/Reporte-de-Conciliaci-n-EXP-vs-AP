@@ -113,7 +113,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
         ,IAP.TAX_CODE_ID                                    CODIGO_DE_IMPUESTO_AP         -- #28
         ,NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0)                  IMPORTE_IMPUESTO_AP           -- #29
         ,(NVL(0, 0) - NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0))     DIFERENCIA_IMPUESTO           -- #30
-        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                  COMBINACION_CONTABLE_EXP      -- #31 (ajustado: ahora texto legible)
+        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                  COMBINACION_CONTABLE_EXP      -- #31 
         ,DAP.COMBINACION_CONTABLE_AP_TXT                    COMBINACION_CONTABLE_AP       -- #32
         ,CASE 
             WHEN CCPG.CODE_COMBINATION_ID IS NOT NULL 
