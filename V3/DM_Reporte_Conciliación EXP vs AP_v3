@@ -1,8 +1,40 @@
---------------------------------------------------------------------------------
--- Reporte de Conciliación EXPENSES vs AP - v4
---------------------------------------------------------------------------------
-
-WITH PROVEEDOR_POR_FACTURA AS (
+WITH TASAS_IMPUESTO_EXP AS (
+    --============================================================================
+    -- TABLA DE TASAS - TODOS LOS PAÍSES LATAM
+    --============================================================================
+    -- URUGUAY (UYBUY)
+             SELECT 'UY_IVA_10_AP'        TAX_CLASSIFICATION_CODE, 10 TASA, 'Y' IMPUESTO_INCLUIDO FROM DUAL
+    UNION ALL SELECT 'UY_IVA_22_AP'                              , 22      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'UY_IVA_EXENTO_AP'                          ,  0      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'UY_IVA_NO AFECTO_AP'                       ,  0      , 'Y'                  FROM DUAL
+    --
+    -- PERÚ (PEBPE)
+    UNION ALL SELECT 'PE_GRAVADO_10_IG'                          , 10      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'PE_GRAVADO_IG'                             , 18      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'PE_GRAVADO_8_IG'                           ,  8      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'PE_GRAVADO_10.5_IG'                        , 10.5    , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'PE_GRAVADO_15_IG'                          , 15      , 'Y'                  FROM DUAL
+    --
+    -- ARGENTINA (ARCAF) - SIN USO DE TAX EN EXP (según tabla proporcionada)
+    -- UNION ALL SELECT 'AR_IVA_21_AP'                            , 21      , 'Y'                  FROM DUAL
+    -- UNION ALL SELECT 'AR_IVA_10_5_AP'                          , 10.5    , 'Y'                  FROM DUAL
+    --
+    -- PARAGUAY (PYBPY)
+    UNION ALL SELECT 'PY_IVA_10%_EXP_AP'                         , 10      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'PY_IVA_5%_EXP_AP'                          ,  5      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'PY_IVA_EXENTO_AP'                          ,  0      , 'Y'                  FROM DUAL
+    --
+    -- CHILE (CLID)
+    UNION ALL SELECT 'CL_IVA_12%_AP'                             , 12      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'CL_IVA_12%_GPO_AP'                         , 12      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'CL_IVA_19%_AP'                             , 19      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'CL_IVA_EXENTO_AP'                          ,  0      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'CL_IVA_IMP_19%_AP'                         , 19      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'CL_IVA_NO_AFECTO_AP'                       ,  0      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'CL_IVA_AP'                                 , 19      , 'Y'                  FROM DUAL
+    UNION ALL SELECT 'CL_IVA_AP_GRP'                             , 12      , 'Y'                  FROM DUAL
+)
+,PROVEEDOR_POR_FACTURA AS (
     SELECT
          AILA.INVOICE_ID
         ,AILA.MERCHANT_NAME
@@ -41,7 +73,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
         ECAA.EXPENSE_REPORT_ID
 )
 ,LINEAS_PADRE_EXCLUIR AS (
-    SELECT DISTINCT ITEMIZATION_PARENT_EXPENSE_ID       EXPENSE_ID_PADRE
+    SELECT DISTINCT ITEMIZATION_PARENT_EXPENSE_ID       EXPENSE_ID_PADREA
     FROM EXM_EXPENSES
     WHERE ITEMIZATION_PARENT_EXPENSE_ID IS NOT NULL
       AND ITEMIZATION_PARENT_EXPENSE_ID != -1
@@ -66,28 +98,6 @@ WITH PROVEEDOR_POR_FACTURA AS (
     WHERE
          AID.DIST_CODE_COMBINATION_ID = GCC.CODE_COMBINATION_ID(+)
         AND AID.LINE_TYPE_LOOKUP_CODE IN ('REC_TAX', 'NONREC_TAX')
-)
-,IMPUESTOS_AP AS (
-    SELECT
-        TRX_ID,
-        TRX_LINE_NUMBER,
-        MAX(TAX) AS TAX_CODE,
-        SUM(TAX_AMT) AS TOTAL_TAX_AMOUNT_REAL,
-        SUM(TAX_AMT_FUNCL_CURR) AS TOTAL_TAX_AMOUNT_FUNCL
-    FROM ZX_LINES
-    WHERE APPLICATION_ID = 200 
-      AND ENTITY_CODE = 'AP_INVOICES'
-    GROUP BY TRX_ID, TRX_LINE_NUMBER
-)
-,IMPUESTOS_AP_AGREGADOS AS (
-    SELECT
-         TRX_ID
-        ,MAX(TAX_CODE) AS TAX_CODE_ID
-        ,SUM(TOTAL_TAX_AMOUNT_REAL) AS TOTAL_TAX_AMOUNT_REAL
-    FROM
-        IMPUESTOS_AP
-    GROUP BY
-        TRX_ID
 )
 ,BASE_DATOS AS (
     SELECT
@@ -125,11 +135,85 @@ WITH PROVEEDOR_POR_FACTURA AS (
         ,(EER.EXPENSE_REPORT_TOTAL * NVL(EE.EXCHANGE_RATE,1) 
          - AIA.INVOICE_AMOUNT * NVL(AIA.EXCHANGE_RATE,1)) 
                                                            DIFERENCIA_MONEDA_FUNCIONAL   
+
+        -- BLOQUE DE IMPUESTOS
+
         ,EE.TAX_CLASSIFICATION_CODE                        CODIGO_DE_IMPUESTO_EXP    
-        ,CAST(NULL AS NUMBER)                              IMPORTE_IMPUESTO_EXP      
-        ,IAP.TAX_CODE_ID                                   CODIGO_DE_IMPUESTO_AP     
-        ,NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0)                 IMPORTE_IMPUESTO_AP       
-        ,(NVL(0, 0) - NVL(IAP.TOTAL_TAX_AMOUNT_REAL, 0))   DIFERENCIA_IMPUESTO       
+        ,TIE.TASA                                          TASA_IMPUESTO_EXP
+        ,CASE
+            WHEN TIE.TASA IS NULL THEN NULL
+            WHEN TIE.IMPUESTO_INCLUIDO = 'Y'
+                THEN ROUND( EE.REIMBURSABLE_AMOUNT * 100 / (100 + TIE.TASA), 2)
+            ELSE ROUND( EE.REIMBURSABLE_AMOUNT, 2)
+         END                                               BASE_IMPONIBLE_EXP
+        ,CASE
+            WHEN TIE.TASA IS NULL THEN NULL
+            WHEN TIE.IMPUESTO_INCLUIDO = 'Y'
+                THEN ROUND( EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
+            ELSE ROUND( EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
+         END                                               IMPORTE_IMPUESTO_EXP      
+        ,(SELECT MAX(ZXL.TAX_RATE_CODE)
+            FROM ZX_LINES ZXL
+           WHERE ZXL.APPLICATION_ID  = 200
+             AND ZXL.ENTITY_CODE     = 'AP_INVOICES'
+             AND ZXL.TRX_ID          = APIL.INVOICE_ID
+             AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+         )                                                 CODIGO_DE_IMPUESTO_AP     
+        ,(SELECT MAX(ZXL.TAX_RATE)
+            FROM ZX_LINES ZXL
+           WHERE ZXL.APPLICATION_ID  = 200
+             AND ZXL.ENTITY_CODE     = 'AP_INVOICES'
+             AND ZXL.TRX_ID          = APIL.INVOICE_ID
+             AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+         )                                                 TASA_IMPUESTO_AP
+        ,NVL(
+            (SELECT SUM(ZXL.TAX_AMT)
+               FROM ZX_LINES ZXL
+              WHERE ZXL.APPLICATION_ID  = 200
+                AND ZXL.ENTITY_CODE     = 'AP_INVOICES'
+                AND ZXL.TRX_ID          = APIL.INVOICE_ID
+                AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+            ), 0)                                          IMPORTE_IMPUESTO_AP       
+        ,CASE
+            WHEN TIE.TASA IS NULL THEN NULL
+            WHEN TIE.IMPUESTO_INCLUIDO = 'Y'
+                THEN ROUND( EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
+                     - NVL((SELECT SUM(ZXL.TAX_AMT) FROM ZX_LINES ZXL
+                             WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+                               AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER), 0)
+            ELSE ROUND( EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
+                     - NVL((SELECT SUM(ZXL.TAX_AMT) FROM ZX_LINES ZXL
+                             WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+                               AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER), 0)
+         END                                               DIFERENCIA_IMPUESTO       
+        ,CASE
+            WHEN EE.TAX_CLASSIFICATION_CODE IS NULL
+             AND (SELECT MAX(ZXL.TAX_RATE_CODE) FROM ZX_LINES ZXL
+                   WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+                     AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+                 ) IS NULL                                THEN 'SIN_IMPUESTO'
+            WHEN TIE.TASA IS NULL                          THEN 'SIN_TASA_CONFIGURADA'
+            WHEN (SELECT MAX(ZXL.TAX_RATE_CODE) FROM ZX_LINES ZXL
+                   WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+                     AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+                 ) IS NULL                                THEN 'SIN_IMPUESTO_AP'
+            WHEN EE.TAX_CLASSIFICATION_CODE IS NULL        THEN 'SIN_IMPUESTO_EXP'
+            WHEN EE.TAX_CLASSIFICATION_CODE !=
+                 (SELECT MAX(ZXL.TAX_RATE_CODE) FROM ZX_LINES ZXL
+                   WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+                     AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+                 )                                        THEN 'CODIGO_DIFERENTE'
+            WHEN ABS( CASE WHEN TIE.IMPUESTO_INCLUIDO = 'Y'
+                           THEN ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
+                           ELSE ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
+                      END
+                      - NVL((SELECT SUM(ZXL.TAX_AMT) FROM ZX_LINES ZXL
+                              WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+                                AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER), 0)
+                    ) > 0.01                               THEN 'IMPORTE_DIFERENTE'
+            ELSE 'IGUAL'
+         END                                               RESULTADO_IMPUESTO
+
         ,CCPG.COMBINACION_CONTABLE_EXP_TXT                 COMBINACION_CONTABLE_EXP 
         ,DAP.COMBINACION_CONTABLE_AP_TXT                   COMBINACION_CONTABLE_AP   
         ,CASE 
@@ -162,7 +246,7 @@ WITH PROVEEDOR_POR_FACTURA AS (
         ,EXM_EXPENSE_TYPES                             ET
         ,POZ_SUPPLIERS_V                               PS
         ,DISTRIBUCIONES_AP                             DAP
-        ,IMPUESTOS_AP_AGREGADOS                        IAP
+        ,TASAS_IMPUESTO_EXP                            TIE
     WHERE
         EER.EXPENSE_REPORT_NUM = AIA.INVOICE_NUM(+)
         AND EER.EXPENSE_REPORT_ID = EE.EXPENSE_REPORT_ID
@@ -191,34 +275,25 @@ WITH PROVEEDOR_POR_FACTURA AS (
         AND TRUNC(SYSDATE) BETWEEN NVL(XEP.EFFECTIVE_FROM(+), TO_DATE('01/01/1900','DD/MM/YYYY')) 
                                 AND NVL(XEP.EFFECTIVE_TO(+), TO_DATE('31/12/4712','DD/MM/YYYY'))      
         AND HAOUV.NAME IN ('ARCAF','CLID','PEBPE','PYBPY','UYBUY')
-        -- Parámetro Oficial: Razón Social (multiple selection corregido)
         AND ( LEAST(:P_RAZON_SOCIAL) IS NULL OR XEP.NAME IN (:P_RAZON_SOCIAL) )
-        -- Parámetro Oficial: Unidad de Negocio (multiple selection corregido)
         AND ( LEAST(:P_UNIDAD_NEGOCIO) IS NULL OR HAOUV.NAME IN (:P_UNIDAD_NEGOCIO) )
-        -- Parámetros Oficiales: Fechas Desde / Hasta
         AND TRUNC(EER.EXPENSE_REPORT_DATE) >= NVL(:P_FECHA_DESDE, TRUNC(EER.EXPENSE_REPORT_DATE))
         AND TRUNC(EER.EXPENSE_REPORT_DATE) <= NVL(:P_FECHA_HASTA, TRUNC(EER.EXPENSE_REPORT_DATE))
-        -- Parámetro Oficial: Número de Informe de Gastos
         AND (EER.EXPENSE_REPORT_NUM = NVL(:P_NUM_INFORME, EER.EXPENSE_REPORT_NUM) OR :P_NUM_INFORME IS NULL)
-        -- Parámetro Oficial: Nombre del Empleado (ID)
         AND EER.PERSON_ID = NVL(:P_COLABORADOR_ID, EER.PERSON_ID) 
-        -- Parámetro Oficial: Estado Expense
         AND EER.EXPENSE_STATUS_CODE = NVL(:P_ESTADO_EXPENSES, EER.EXPENSE_STATUS_CODE)
-        -- Parámetro Oficial: Estado AP
         AND (AIA.APPROVAL_STATUS = NVL(:P_ESTADO_AP, AIA.APPROVAL_STATUS) OR (:P_ESTADO_AP IS NULL AND AIA.APPROVAL_STATUS IS NULL))
-        -- Parámetro Oficial: Cuenta Contable
         AND (CCPG.CODE_COMBINATION_ID = NVL(
                 CASE WHEN REGEXP_LIKE(:P_CUENTA_CONTABLE, '^[0-9]+$') 
                     THEN TO_NUMBER(:P_CUENTA_CONTABLE) 
                 END, 
                 CCPG.CODE_COMBINATION_ID)
             OR :P_CUENTA_CONTABLE IS NULL)
-        -- Joins complementarios de tipos y proveedores
         AND EE.EXPENSE_TYPE_ID = ET.EXPENSE_TYPE_ID(+)
         AND AIA.VENDOR_ID = PS.VENDOR_ID(+)
         AND AIA.INVOICE_ID = DAP.INVOICE_ID(+)
         AND DAP.INVOICE_LINE_NUMBER(+) = 1
-        AND AIA.INVOICE_ID = IAP.TRX_ID(+)
+        AND EE.TAX_CLASSIFICATION_CODE = TIE.TAX_CLASSIFICATION_CODE(+)
 )
 SELECT * 
 FROM BASE_DATOS
