@@ -1,0 +1,917 @@
+WITH
+/* ============================================================
+   1. PARAMETROS Y TOLERANCIAS
+   ============================================================ */
+PARAMETROS AS (
+    SELECT
+         NVL(:P_TOLERANCIA_IMPORTE, 0.01) AS TOLERANCIA_IMPORTE
+        ,NVL(:P_TOLERANCIA_IMPUESTO, 0.01) AS TOLERANCIA_IMPUESTO
+        ,NVL(:P_TOLERANCIA_TIPO_CAMBIO, 0.000001) AS TOLERANCIA_TIPO_CAMBIO
+    FROM DUAL
+),
+
+/* 2. TASAS DE IMPUESTO DE EXPENSES */
+TASAS_IMPUESTO_EXP AS (
+    SELECT 'UY_IVA_10_AP' TAX_CLASSIFICATION_CODE, 10 TASA, 'Y' IMPUESTO_INCLUIDO FROM DUAL UNION ALL
+    SELECT 'UY_IVA_22_AP', 22, 'Y' FROM DUAL UNION ALL
+    SELECT 'UY_IVA_EXENTO_AP', 0, 'Y' FROM DUAL UNION ALL
+    SELECT 'UY_IVA_NO AFECTO_AP', 0, 'Y' FROM DUAL UNION ALL
+    SELECT 'PE_GRAVADO_10_IG', 10, 'Y' FROM DUAL UNION ALL
+    SELECT 'PE_GRAVADO_IG', 18, 'Y' FROM DUAL UNION ALL
+    SELECT 'PE_GRAVADO_8_IG', 8, 'Y' FROM DUAL UNION ALL
+    SELECT 'PE_GRAVADO_10.5_IG', 10.5, 'Y' FROM DUAL UNION ALL
+    SELECT 'PE_GRAVADO_15_IG', 15, 'Y' FROM DUAL UNION ALL
+    SELECT 'PE_RET_4TA', -8, 'Y' FROM DUAL UNION ALL
+    SELECT 'PY_IVA_10%_EXP_AP', 10, 'Y' FROM DUAL UNION ALL
+    SELECT 'PY_IVA_5%_EXP_AP', 5, 'Y' FROM DUAL UNION ALL
+    SELECT 'PY_IVA_EXENTO_AP', 0, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_12%_AP', 12, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_12%_GPO_AP', 12, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_19%_AP', 19, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_EXENTO_AP', 0, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_IMP_19%_AP', 19, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_NO_AFECTO_AP', 0, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_AP', 19, 'Y' FROM DUAL UNION ALL
+    SELECT 'CL_IVA_AP_GRP', 12, 'Y' FROM DUAL
+),
+
+/* ============================================================
+   3. ESTADOS
+   ============================================================ */
+ESTADOS_EXPENSE_LOOKUP AS (
+    SELECT DISTINCT
+         LOOKUP_CODE
+        ,MEANING
+    FROM FND_LOOKUP_VALUES_VL
+    WHERE LOOKUP_TYPE = 'EXM_REPORT_STATUS'
+),
+
+ESTADOS_AP_LOOKUP AS (
+    SELECT DISTINCT
+         LOOKUP_CODE
+        ,MEANING
+    FROM FND_LOOKUP_VALUES_VL
+    WHERE LOOKUP_TYPE IN ('INVOICE STATUS', 'AP_INVOICE_STATUS')
+),
+
+/* ============================================================
+   4. LINEAS PADRE QUE NO DEBEN VOLVER A MOSTRARSE
+   ============================================================ */
+LINEAS_PADRE_EXCLUIR AS (
+    SELECT DISTINCT
+        ITEMIZATION_PARENT_EXPENSE_ID AS EXPENSE_ID_PADRE
+    FROM EXM_EXPENSES
+    WHERE ITEMIZATION_PARENT_EXPENSE_ID IS NOT NULL
+      AND ITEMIZATION_PARENT_EXPENSE_ID <> -1
+
+    UNION
+
+    SELECT DISTINCT
+        MERGED_PARENT_EXPENSE_ID AS EXPENSE_ID_PADRE
+    FROM EXM_EXPENSES
+    WHERE MERGED_PARENT_EXPENSE_ID IS NOT NULL
+      AND MERGED_PARENT_EXPENSE_ID <> -1
+),
+
+/* ============================================================
+   5. DISTRIBUCIONES CONTABLES DE EXPENSES
+   Nivel: una fila por distribución de gasto
+   ============================================================ */
+EXPENSE_DISTRIBUCIONES AS (
+    SELECT
+         EED.EXPENSE_DIST_ID
+        ,EED.EXPENSE_REPORT_ID
+        ,EED.EXPENSE_ID
+        ,EED.SEQUENCE_NUM
+        ,EED.CODE_COMBINATION_ID
+        ,EED.REIMBURSABLE_AMOUNT
+        ,EED.COST_CENTER
+        ,GCC.CONCATENATED_SEGMENTS AS COMBINACION_CONTABLE_EXP
+    FROM
+         EXM_EXPENSE_DISTS EED
+        ,GL_CODE_COMBINATIONS GCC
+    WHERE EED.CODE_COMBINATION_ID = GCC.CODE_COMBINATION_ID(+)
+),
+
+/* ============================================================
+   6. DISTRIBUCIONES AP
+   Se mantienen las distribuciones ITEM para no mezclar impuestos,
+   fletes y otros cargos con la distribución principal.
+   ============================================================ */
+AP_DISTRIBUCIONES AS (
+    SELECT
+         AID.INVOICE_DISTRIBUTION_ID
+        ,AID.INVOICE_ID
+        ,AID.DISTRIBUTION_LINE_NUMBER
+        ,AID.DIST_CODE_COMBINATION_ID
+        ,AID.AMOUNT
+        ,AID.ACCOUNTING_DATE
+        ,AID.POSTED_FLAG
+        ,GCC.CONCATENATED_SEGMENTS AS COMBINACION_CONTABLE_AP
+    FROM
+         AP_INVOICE_DISTRIBUTIONS_ALL AID
+        ,GL_CODE_COMBINATIONS GCC
+    WHERE AID.DIST_CODE_COMBINATION_ID = GCC.CODE_COMBINATION_ID(+)
+      AND AID.LINE_TYPE_LOOKUP_CODE = 'ITEM'
+),
+
+/* ============================================================
+   7. IMPUESTOS AP POR FACTURA Y LINEA
+   Se agregan antes de unir para evitar duplicidades.
+   ============================================================ */
+IMPUESTOS_AP_LINEA AS (
+    SELECT
+         ZXL.TRX_ID AS INVOICE_ID
+        ,ZXL.TRX_LINE_NUMBER
+        ,ROUND(SUM(NVL(ZXL.TAX_AMT, 0)), 2) AS IMPORTE_IMPUESTO_AP
+        ,LISTAGG(
+             DISTINCT ZXL.TAX_RATE_CODE,
+             ', '
+         ) WITHIN GROUP (
+             ORDER BY ZXL.TAX_RATE_CODE
+         ) AS CODIGO_DE_IMPUESTO_AP
+    FROM ZX_LINES ZXL
+    WHERE ZXL.APPLICATION_ID = 200
+      AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+    GROUP BY
+         ZXL.TRX_ID
+        ,ZXL.TRX_LINE_NUMBER
+),
+
+/* ============================================================
+   8. IMPUESTOS AP POR FACTURA
+   Utilizado para mostrar el total fiscal del documento AP.
+   ============================================================ */
+IMPUESTOS_AP_FACTURA AS (
+    SELECT
+         ZXL.TRX_ID AS INVOICE_ID
+        ,ROUND(SUM(NVL(ZXL.TAX_AMT, 0)), 2) AS IMPORTE_IMPUESTO_AP_FACTURA
+        ,LISTAGG(
+             DISTINCT ZXL.TAX_RATE_CODE,
+             ', '
+         ) WITHIN GROUP (
+             ORDER BY ZXL.TAX_RATE_CODE
+         ) AS CODIGOS_IMPUESTO_AP_FACTURA
+    FROM ZX_LINES ZXL
+    WHERE ZXL.APPLICATION_ID = 200
+      AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+    GROUP BY
+        ZXL.TRX_ID
+),
+
+/* ============================================================
+   9. ANTICIPOS
+   ============================================================ */
+/*
+   Esta CTE debe ajustarse a las tablas disponibles en tu ambiente.
+   Los nombres de columnas pueden variar según la versión y las
+   vistas habilitadas para BI Publisher.
+
+   La regla funcional es:
+   - Un informe puede tener varios anticipos.
+   - Los anticipos se agregan por EXPENSE_REPORT_ID.
+   - No se debe repetir el importe aplicado por cada línea.
+*/
+ANTICIPOS_AGG AS (
+    SELECT
+         CA.EXPENSE_REPORT_ID
+        ,LISTAGG(
+             DISTINCT CA.ADVANCE_NUMBER,
+             ', '
+         ) WITHIN GROUP (
+             ORDER BY CA.ADVANCE_NUMBER
+         ) AS NUMEROS_ANTICIPO
+        ,MAX(CA.ADVANCE_STATUS) AS ESTADO_ANTICIPO
+        ,ROUND(SUM(NVL(CA.REQUESTED_AMOUNT, 0)), 2) AS IMPORTE_ANTICIPO_SOLICITADO
+        ,ROUND(SUM(NVL(CA.APPROVED_AMOUNT, 0)), 2) AS IMPORTE_ANTICIPO_APROBADO
+        ,ROUND(SUM(NVL(CA.PAID_AMOUNT, 0)), 2) AS IMPORTE_ANTICIPO_PAGADO
+        ,ROUND(SUM(NVL(CA.APPLIED_AMOUNT, 0)), 2) AS IMPORTE_ANTICIPO_APLICADO
+        ,ROUND(SUM(NVL(CA.OUTSTANDING_AMOUNT, 0)), 2) AS SALDO_ANTICIPO
+        ,LISTAGG(
+             DISTINCT CA.AP_REFERENCE,
+             ', '
+         ) WITHIN GROUP (
+             ORDER BY CA.AP_REFERENCE
+         ) AS REFERENCIA_AP_ANTICIPO
+    FROM
+        EXM_CASH_ADVANCES CA
+    GROUP BY
+        CA.EXPENSE_REPORT_ID
+),
+
+/* ============================================================
+   10. PROVEEDOR AP
+   ============================================================ */
+PROVEEDOR_AP AS (
+    SELECT
+         AIA.INVOICE_ID
+        ,AIA.VENDOR_ID
+        ,AIA.VENDOR_SITE_ID
+        ,AIA.PARTY_ID
+        ,PS.SEGMENT1 AS NUMERO_PROVEEDOR_AP
+        ,HZP.PARTY_NAME AS PROVEEDOR_AP
+    FROM
+         AP_INVOICES_ALL AIA
+        ,POZ_SUPPLIERS PS
+        ,HZ_PARTIES HZP
+    WHERE AIA.VENDOR_ID = PS.VENDOR_ID(+)
+      AND NVL(PS.PARTY_ID, AIA.PARTY_ID) = HZP.PARTY_ID(+)
+),
+
+/* ============================================================
+   11. DATOS BASE
+   Nivel recomendado: gasto/distribución EXP contra línea/
+   distribución AP.
+   ============================================================ */
+BASE_DATOS AS (
+    SELECT
+         XEP.NAME AS RAZON_SOCIAL
+        ,HAOUV.NAME AS UNIDAD_NEGOCIO
+
+        ,EER.EXPENSE_REPORT_ID
+        ,EE.EXPENSE_ID
+        ,ED.EXPENSE_DIST_ID
+        ,ED.SEQUENCE_NUM AS SECUENCIA_DISTRIBUCION_EXP
+
+        ,PPNF.FULL_NAME AS NOMBRE_DEL_EMPLEADO
+        ,EER.PERSON_ID AS COLABORADOR_ID
+
+        ,EER.EXPENSE_REPORT_NUM AS NUM_INFORME_DE_GASTOS
+        ,EER.EXPENSE_STATUS_CODE AS ESTADO_DEL_INFORME
+        ,EXL.MEANING AS ESTADO_DEL_INFORME_TXT
+
+        ,TO_CHAR(EER.EXPENSE_REPORT_DATE, 'DD/MM/YYYY')
+            AS FECHA_INFORME
+
+        ,TO_CHAR(EER.SUBMISSION_DATE, 'DD/MM/YYYY')
+            AS FECHA_ENVIO_EXP
+
+        ,TO_CHAR(EER.FINAL_APPROVAL_DATE, 'DD/MM/YYYY')
+            AS FECHA_APROBACION_EXP
+
+        ,ROW_NUMBER() OVER (
+             PARTITION BY EER.EXPENSE_REPORT_ID
+             ORDER BY EE.EXPENSE_ID, ED.EXPENSE_DIST_ID
+         ) AS LINEA_DE_GASTO
+
+        ,TO_CHAR(
+             COALESCE(EE.RECEIPT_DATE, EE.START_DATE),
+             'DD/MM/YYYY'
+         ) AS FECHA_DEL_GASTO_LINEA
+
+        ,ET.EXPENSE_TYPE_ID AS TIPO_DE_GASTO_ID
+        ,ET.NAME AS TIPO_DE_GASTO
+
+        ,EE.DESCRIPTION AS DESCRIPCION_DEL_GASTO
+
+        ,EE.MERCHANT_NAME AS NOMBRE_COMERCIANTE_EXP
+
+        ,NVL(
+             APIL.MERCHANT_NAME,
+             EE.MERCHANT_NAME
+         ) AS NOMBRE_COMERCIANTE_PROVEEDOR_EXP
+
+        ,PPA.NUMERO_PROVEEDOR_AP
+        ,PPA.PROVEEDOR_AP
+        ,PPA.VENDOR_ID AS PROVEEDOR_AP_ID
+        ,PPA.VENDOR_SITE_ID AS SITIO_PROVEEDOR_AP_ID
+
+        ,AIA.INVOICE_ID
+        ,AIA.INVOICE_NUM AS NUMERO_DE_FACTURA_AP
+        ,AIA.INVOICE_TYPE_LOOKUP_CODE AS TIPO_DOCUMENTO_AP
+        ,AIA.APPROVAL_STATUS AS ESTADO_FACTURA_AP
+        ,APL.MEANING AS ESTADO_FACTURA_AP_TXT
+
+        ,AIA.CANCELLED_DATE AS FECHA_CANCELACION_AP
+        ,AIA.CANCELLED_AMOUNT AS IMPORTE_CANCELADO_AP
+
+        ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')
+            AS FECHA_FACTURA_AP
+
+        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')
+            AS FECHA_CONTABLE_AP
+
+        ,AIA.POSTING_STATUS AS ESTADO_CONTABILIZACION_AP
+        ,AIA.PAYMENT_STATUS_FLAG AS ESTADO_PAGO_AP
+
+        ,EER.REIMBURSEMENT_CURRENCY_CODE
+            AS MONEDA_INTRODUCIDA_EXP
+
+        ,AIA.INVOICE_CURRENCY_CODE
+            AS MONEDA_AP
+
+        ,GL.CURRENCY_CODE
+            AS MONEDA_FUNCIONAL
+
+        ,ED.EXPENSE_DIST_ID AS ID_DISTRIBUCION_EXP
+        ,AID.INVOICE_DISTRIBUTION_ID AS ID_DISTRIBUCION_AP
+        ,APIL.LINE_NUMBER AS LINEA_AP
+
+        ,ROUND(NVL(ED.REIMBURSABLE_AMOUNT, 0), 2)
+            AS IMPORTE_DISTRIBUCION_EXP
+
+        ,ROUND(NVL(APIL.AMOUNT, 0), 2)
+            AS IMPORTE_LINEA_AP
+
+        ,ROUND(NVL(AID.AMOUNT, 0), 2)
+            AS IMPORTE_DISTRIBUCION_AP
+
+        ,ROUND(NVL(EE.REIMBURSABLE_AMOUNT, 0), 2)
+            AS IMPORTE_TOTAL_EXP_MONEDA_INTRODUCIDA
+
+        ,ROUND(NVL(APIL.AMOUNT, 0), 2)
+            AS IMPORTE_TOTAL_AP_MONEDA_INTRODUCIDA
+
+        ,TIE.TASA AS TASA_IMPUESTO_EXP
+        ,TIE.IMPUESTO_INCLUIDO
+
+        ,EE.TAX_CLASSIFICATION_CODE
+            AS CODIGO_DE_IMPUESTO_EXP
+
+        ,CASE
+            WHEN TIE.TASA IS NULL THEN NULL
+            WHEN TIE.IMPUESTO_INCLUIDO = 'Y' THEN
+                ROUND(
+                    NVL(ED.REIMBURSABLE_AMOUNT, 0)
+                    * TIE.TASA
+                    / (100 + TIE.TASA),
+                    2
+                )
+            ELSE
+                ROUND(
+                    NVL(ED.REIMBURSABLE_AMOUNT, 0)
+                    * TIE.TASA
+                    / 100,
+                    2
+                )
+         END AS IMPORTE_IMPUESTO_EXP
+
+        ,ROUND(
+             NVL(ED.REIMBURSABLE_AMOUNT, 0)
+             -
+             CASE
+                 WHEN TIE.TASA IS NULL THEN 0
+                 WHEN TIE.IMPUESTO_INCLUIDO = 'Y' THEN
+                     NVL(ED.REIMBURSABLE_AMOUNT, 0)
+                     * TIE.TASA
+                     / (100 + TIE.TASA)
+                 ELSE
+                     NVL(ED.REIMBURSABLE_AMOUNT, 0)
+                     * TIE.TASA
+                     / 100
+             END,
+             2
+         ) AS SUBTOTAL_EXP_MONEDA_INTRODUCIDA
+
+        ,ROUND(
+             NVL(APIL.AMOUNT, 0)
+             - NVL(IALI.IMPORTE_IMPUESTO_AP, 0),
+             2
+         ) AS SUBTOTAL_AP_MONEDA_INTRODUCIDA
+
+        ,ROUND(
+             NVL(IALI.IMPORTE_IMPUESTO_AP, 0),
+             2
+         ) AS IMPORTE_IMPUESTO_AP
+
+        ,IALI.CODIGO_DE_IMPUESTO_AP
+
+        ,ROUND(
+             NVL(IAFI.IMPORTE_IMPUESTO_AP_FACTURA, 0),
+             2
+         ) AS IMPORTE_IMPUESTO_AP_FACTURA
+
+        ,IAFI.CODIGOS_IMPUESTO_AP_FACTURA
+
+        ,ED.CODE_COMBINATION_ID AS CUENTA_CONTABLE_EXP_ID
+        ,ED.COMBINACION_CONTABLE_EXP
+
+        ,AID.DIST_CODE_COMBINATION_ID AS CUENTA_CONTABLE_AP_ID
+        ,AID.COMBINACION_CONTABLE_AP
+
+        ,ED.COST_CENTER AS CENTRO_COSTO_EXP
+
+        ,AID.ACCOUNTING_DATE AS FECHA_CONTABLE_DISTRIBUCION_AP
+        ,AID.POSTED_FLAG AS DISTRIBUCION_AP_CONTABILIZADA
+
+        ,EE.EXCHANGE_RATE AS TIPO_DE_CAMBIO_EXP
+        ,AIA.EXCHANGE_RATE AS TIPO_DE_CAMBIO_AP
+
+        ,ROUND(
+             NVL(ED.REIMBURSABLE_AMOUNT, 0)
+             * NVL(EE.EXCHANGE_RATE, 1),
+             2
+         ) AS IMPORTE_EXP_MONEDA_FUNCIONAL
+
+        ,ROUND(
+             NVL(APIL.AMOUNT, 0)
+             * NVL(AIA.EXCHANGE_RATE, 1),
+             2
+         ) AS IMPORTE_AP_MONEDA_FUNCIONAL
+
+        ,AA.NUMEROS_ANTICIPO
+        ,AA.ESTADO_ANTICIPO
+        ,AA.IMPORTE_ANTICIPO_SOLICITADO
+        ,AA.IMPORTE_ANTICIPO_APROBADO
+        ,AA.IMPORTE_ANTICIPO_PAGADO
+        ,AA.IMPORTE_ANTICIPO_APLICADO
+        ,AA.SALDO_ANTICIPO
+        ,AA.REFERENCIA_AP_ANTICIPO
+
+    FROM
+         EXM_EXPENSE_REPORTS EER
+        ,EXM_EXPENSES EE
+        ,EXM_EXPENSE_DISTS ED
+        ,AP_INVOICES_ALL AIA
+        ,AP_INVOICE_LINES_ALL APIL
+        ,AP_DISTRIBUCIONES AID
+        ,IMPUESTOS_AP_LINEA IALI
+        ,IMPUESTOS_AP_FACTURA IAFI
+        ,ANTICIPOS_AGG AA
+        ,PROVEEDOR_AP PPA
+        ,PER_PERSON_NAMES_F PPNF
+        ,HR_ALL_ORGANIZATION_UNITS_VL HAOUV
+        ,FUN_ALL_BUSINESS_UNITS_V FABUV
+        ,XLE_ENTITY_PROFILES XEP
+        ,GL_LEDGERS GL
+        ,EXM_EXPENSE_TYPES ET
+        ,TASAS_IMPUESTO_EXP TIE
+        ,ESTADOS_EXPENSE_LOOKUP EXL
+        ,ESTADOS_AP_LOOKUP APL
+
+    WHERE
+        EER.EXPENSE_REPORT_ID = EE.EXPENSE_REPORT_ID
+        AND EE.EXPENSE_ID = ED.EXPENSE_ID
+
+        AND NOT EXISTS (
+            SELECT 1
+            FROM LINEAS_PADRE_EXCLUIR LP
+            WHERE LP.EXPENSE_ID_PADRE = EE.EXPENSE_ID
+        )
+
+        AND EER.EXPENSE_REPORT_NUM = AIA.INVOICE_NUM(+)
+        AND EER.ORG_ID = AIA.ORG_ID(+)
+
+        AND AIA.INVOICE_ID = APIL.INVOICE_ID(+)
+        AND APIL.REFERENCE_KEY2(+) = TO_CHAR(EE.EXPENSE_ID)
+
+        AND APIL.INVOICE_ID = AID.INVOICE_ID(+)
+        AND APIL.LINE_NUMBER = AID.DISTRIBUTION_LINE_NUMBER(+)
+
+        AND AIA.INVOICE_ID = IALI.INVOICE_ID(+)
+        AND APIL.LINE_NUMBER = IALI.TRX_LINE_NUMBER(+)
+
+        AND AIA.INVOICE_ID = IAFI.INVOICE_ID(+)
+
+        AND EER.EXPENSE_REPORT_ID = AA.EXPENSE_REPORT_ID(+)
+
+        AND AIA.INVOICE_ID = PPA.INVOICE_ID(+)
+
+        AND EER.PERSON_ID = PPNF.PERSON_ID(+)
+        AND PPNF.NAME_TYPE(+) = 'GLOBAL'
+        AND TRUNC(SYSDATE) BETWEEN
+                PPNF.EFFECTIVE_START_DATE(+)
+            AND PPNF.EFFECTIVE_END_DATE(+)
+
+        AND EER.ORG_ID = HAOUV.ORGANIZATION_ID
+
+        AND HAOUV.NAME = FABUV.BU_NAME(+)
+
+        AND TO_NUMBER(FABUV.PRIMARY_LEDGER_ID) =
+            GL.LEDGER_ID(+)
+
+        AND TO_NUMBER(FABUV.LEGAL_ENTITY_ID) =
+            XEP.LEGAL_ENTITY_ID(+)
+
+        AND TRUNC(SYSDATE) BETWEEN
+                NVL(
+                    XEP.EFFECTIVE_FROM(+),
+                    TO_DATE('01/01/1900', 'DD/MM/YYYY')
+                )
+            AND NVL(
+                    XEP.EFFECTIVE_TO(+),
+                    TO_DATE('31/12/4712', 'DD/MM/YYYY')
+                )
+
+        AND EE.EXPENSE_TYPE_ID = ET.EXPENSE_TYPE_ID(+)
+
+        AND EE.TAX_CLASSIFICATION_CODE =
+            TIE.TAX_CLASSIFICATION_CODE(+)
+
+        AND EER.EXPENSE_STATUS_CODE =
+            EXL.LOOKUP_CODE(+)
+
+        AND AIA.APPROVAL_STATUS =
+            APL.LOOKUP_CODE(+)
+
+        AND HAOUV.NAME IN (
+            'ARCAF',
+            'CLID',
+            'PEBPE',
+            'PYBPY',
+            'UYBUY'
+        )
+
+        AND (
+            :P_RAZON_SOCIAL IS NULL
+            OR XEP.NAME IN (:P_RAZON_SOCIAL)
+        )
+
+        AND (
+            :P_UNIDAD_NEGOCIO IS NULL
+            OR HAOUV.NAME IN (:P_UNIDAD_NEGOCIO)
+        )
+
+        AND TRUNC(EER.EXPENSE_REPORT_DATE) >=
+            NVL(
+                :P_FECHA_DESDE,
+                TRUNC(EER.EXPENSE_REPORT_DATE)
+            )
+
+        AND TRUNC(EER.EXPENSE_REPORT_DATE) <=
+            NVL(
+                :P_FECHA_HASTA,
+                TRUNC(EER.EXPENSE_REPORT_DATE)
+            )
+
+        AND (
+            EER.EXPENSE_REPORT_NUM = :P_NUM_INFORME
+            OR :P_NUM_INFORME IS NULL
+        )
+
+        AND (
+            EER.PERSON_ID = :P_COLABORADOR_ID
+            OR :P_COLABORADOR_ID IS NULL
+        )
+
+        AND (
+            EER.EXPENSE_STATUS_CODE = :P_ESTADO_EXPENSES
+            OR :P_ESTADO_EXPENSES IS NULL
+        )
+
+        AND (
+               AIA.APPROVAL_STATUS = :P_ESTADO_AP
+            OR :P_ESTADO_AP IS NULL
+            OR AIA.INVOICE_ID IS NULL
+        )
+
+        AND (
+            ET.EXPENSE_TYPE_ID = :P_TIPO_GASTO
+            OR :P_TIPO_GASTO IS NULL
+        )
+
+        AND (
+               ED.CODE_COMBINATION_ID = :P_CUENTA_CONTABLE
+            OR AID.DIST_CODE_COMBINATION_ID = :P_CUENTA_CONTABLE
+            OR :P_CUENTA_CONTABLE IS NULL
+        )
+),
+
+/* ============================================================
+   12. CALCULOS DE CONCILIACION
+   ============================================================ */
+CALCULOS_CONCILIACION AS (
+    SELECT
+         BD.*
+
+        /*
+          Importe EXP comparable:
+          importe EXP menos anticipo aplicado.
+          El anticipo se muestra a nivel de informe.
+          Para evitar repetirlo por distribución, se utiliza únicamente
+          en el cálculo agregado de informe.
+        */
+        ,ROUND(
+             BD.IMPORTE_TOTAL_EXP_MONEDA_INTRODUCIDA
+             - NVL(BD.IMPORTE_ANTICIPO_APLICADO, 0),
+             2
+         ) AS IMPORTE_EXP_COMPARABLE
+
+        ,ROUND(
+             BD.IMPORTE_TOTAL_EXP_MONEDA_FUNCIONAL
+             - (
+                 NVL(BD.IMPORTE_ANTICIPO_APLICADO, 0)
+                 * NVL(BD.TIPO_DE_CAMBIO_EXP, 1)
+               ),
+             2
+         ) AS IMPORTE_EXP_FUNCIONAL_COMPARABLE
+
+        ,ROUND(
+             BD.IMPORTE_TOTAL_EXP_MONEDA_INTRODUCIDA
+             - NVL(BD.IMPORTE_ANTICIPO_APLICADO, 0)
+             - NVL(BD.IMPORTE_TOTAL_AP_MONEDA_INTRODUCIDA, 0),
+             2
+         ) AS DIFERENCIA_MONEDA_INTRODUCIDA
+
+        ,ROUND(
+             BD.IMPORTE_TOTAL_EXP_MONEDA_FUNCIONAL
+             - (
+                 NVL(BD.IMPORTE_ANTICIPO_APLICADO, 0)
+                 * NVL(BD.TIPO_DE_CAMBIO_EXP, 1)
+               )
+             - NVL(BD.IMPORTE_AP_MONEDA_FUNCIONAL, 0),
+             2
+         ) AS DIFERENCIA_MONEDA_FUNCIONAL
+
+        ,CASE
+            WHEN BD.INVOICE_ID IS NULL THEN NULL
+            WHEN BD.MONEDA_INTRODUCIDA_EXP = BD.MONEDA_FUNCIONAL
+             AND BD.MONEDA_AP = BD.MONEDA_FUNCIONAL
+                THEN 0
+            WHEN BD.TIPO_DE_CAMBIO_EXP IS NULL
+              OR BD.TIPO_DE_CAMBIO_AP IS NULL
+                THEN NULL
+            ELSE
+                ROUND(
+                    BD.TIPO_DE_CAMBIO_EXP
+                    - BD.TIPO_DE_CAMBIO_AP,
+                    6
+                )
+         END AS DIFERENCIA_TIPO_CAMBIO
+
+        ,CASE
+            WHEN BD.CUENTA_CONTABLE_EXP_ID IS NULL
+             AND BD.CUENTA_CONTABLE_AP_ID IS NULL
+                THEN 'SIN CUENTAS'
+
+            WHEN BD.CUENTA_CONTABLE_EXP_ID IS NOT NULL
+             AND BD.CUENTA_CONTABLE_AP_ID IS NULL
+                THEN 'SIN CUENTA AP'
+
+            WHEN BD.CUENTA_CONTABLE_EXP_ID IS NULL
+             AND BD.CUENTA_CONTABLE_AP_ID IS NOT NULL
+                THEN 'SIN CUENTA EXP'
+
+            WHEN BD.CUENTA_CONTABLE_EXP_ID =
+                 BD.CUENTA_CONTABLE_AP_ID
+                THEN 'IGUAL'
+
+            ELSE 'DIFERENTE'
+         END AS RESULTADO_CUENTA_CONTABLE
+
+    FROM
+        BASE_DATOS BD
+),
+
+/* ============================================================
+   13. ESTADO Y MOTIVO DE CONCILIACION
+   ============================================================ */
+RESULTADO_CONCILIACION AS (
+    SELECT
+         CC.*
+
+        ,CASE
+            WHEN CC.INVOICE_ID IS NULL
+             AND CC.ESTADO_DEL_INFORME IN (
+                 'APPROVED',
+                 'AUDITED',
+                 'PAID',
+                 'PROCESSED'
+             )
+                THEN 'Pendiente de Migración'
+
+            WHEN CC.INVOICE_ID IS NULL
+                THEN 'No aplica'
+
+            WHEN CC.FECHA_CANCELACION_AP IS NOT NULL
+                THEN 'Observado'
+
+            WHEN ABS(
+                     NVL(CC.DIFERENCIA_MONEDA_INTRODUCIDA, 0)
+                 ) <= P.TOLERANCIA_IMPORTE
+             AND ABS(
+                     NVL(CC.DIFERENCIA_MONEDA_FUNCIONAL, 0)
+                 ) <= P.TOLERANCIA_IMPORTE
+             AND ABS(
+                     NVL(CC.DIFERENCIA_TIPO_CAMBIO, 0)
+                 ) <= P.TOLERANCIA_TIPO_CAMBIO
+             AND ABS(
+                     NVL(
+                         CC.IMPORTE_IMPUESTO_EXP
+                         - CC.IMPORTE_IMPUESTO_AP,
+                         0
+                     )
+                 ) <= P.TOLERANCIA_IMPUESTO
+             AND CC.RESULTADO_CUENTA_CONTABLE IN (
+                 'IGUAL',
+                 'SIN CUENTAS'
+             )
+                THEN 'Conciliado'
+
+            ELSE 'Observado'
+         END AS ESTADO_CONCILIACION
+
+    FROM
+         CALCULOS_CONCILIACION CC
+        ,PARAMETROS P
+),
+
+RESULTADO_FINAL AS (
+    SELECT
+         RC.*
+        ,CASE
+            WHEN RC.INVOICE_ID IS NULL
+             AND RC.ESTADO_CONCILIACION = 'Pendiente de Migración'
+                THEN 'Pendiente AP'
+            WHEN RC.ESTADO_CONCILIACION = 'No aplica'
+                THEN NULL
+            WHEN RC.FECHA_CANCELACION_AP IS NOT NULL
+                THEN 'Documento Cancelado'
+            WHEN RC.RESULTADO_CUENTA_CONTABLE IN (
+                 'DIFERENTE',
+                 'SIN CUENTA AP',
+                 'SIN CUENTA EXP'
+            )
+             AND ABS(
+                     NVL(RC.DIFERENCIA_MONEDA_INTRODUCIDA, 0)
+                 ) <= (
+                     SELECT TOLERANCIA_IMPORTE
+                     FROM PARAMETROS
+                 )
+             AND ABS(
+                     NVL(
+                         RC.IMPORTE_IMPUESTO_EXP
+                         - RC.IMPORTE_IMPUESTO_AP,
+                         0
+                     )
+                 ) <= (
+                     SELECT TOLERANCIA_IMPUESTO
+                     FROM PARAMETROS
+                 )
+                THEN 'Diferencia Cuenta'
+            WHEN ABS(
+                     NVL(RC.DIFERENCIA_MONEDA_INTRODUCIDA, 0)
+                 ) > (
+                     SELECT TOLERANCIA_IMPORTE
+                     FROM PARAMETROS
+                 )
+             AND ABS(
+                     NVL(RC.DIFERENCIA_TIPO_CAMBIO, 0)
+                 ) <= (
+                     SELECT TOLERANCIA_TIPO_CAMBIO
+                     FROM PARAMETROS
+                 )
+             AND ABS(
+                     NVL(
+                         RC.IMPORTE_IMPUESTO_EXP
+                         - RC.IMPORTE_IMPUESTO_AP,
+                         0
+                     )
+                 ) <= (
+                     SELECT TOLERANCIA_IMPUESTO
+                     FROM PARAMETROS
+                 )
+                THEN 'Diferencia Importe'
+
+            WHEN ABS(
+                     NVL(RC.DIFERENCIA_TIPO_CAMBIO, 0)
+                 ) > (
+                     SELECT TOLERANCIA_TIPO_CAMBIO
+                     FROM PARAMETROS
+                 )
+             AND ABS(
+                     NVL(RC.DIFERENCIA_MONEDA_INTRODUCIDA, 0)
+                 ) <= (
+                     SELECT TOLERANCIA_IMPORTE
+                     FROM PARAMETROS
+                 )
+             AND ABS(
+                     NVL(
+                         RC.IMPORTE_IMPUESTO_EXP
+                         - RC.IMPORTE_IMPUESTO_AP,
+                         0
+                     )
+                 ) <= (
+                     SELECT TOLERANCIA_IMPUESTO
+                     FROM PARAMETROS
+                 )
+                THEN 'Diferencia Tipo de Cambio'
+
+            WHEN ABS(
+                     NVL(
+                         RC.IMPORTE_IMPUESTO_EXP
+                         - RC.IMPORTE_IMPUESTO_AP,
+                         0
+                     )
+                 ) > (
+                     SELECT TOLERANCIA_IMPUESTO
+                     FROM PARAMETROS
+                 )
+             AND ABS(
+                     NVL(RC.DIFERENCIA_MONEDA_INTRODUCIDA, 0)
+                 ) <= (
+                     SELECT TOLERANCIA_IMPORTE
+                     FROM PARAMETROS
+                 )
+             AND ABS(
+                     NVL(RC.DIFERENCIA_TIPO_CAMBIO, 0)
+                 ) <= (
+                     SELECT TOLERANCIA_TIPO_CAMBIO
+                     FROM PARAMETROS
+                 )
+                THEN 'Diferencia Impuesto'
+
+            WHEN RC.ESTADO_CONCILIACION = 'Observado'
+                THEN 'Diferencias Múltiples'
+
+            ELSE NULL
+         END AS MOTIVO_OBSERVACION
+
+        ,CASE
+            WHEN RC.ESTADO_CONCILIACION = 'Conciliado'
+                THEN 1
+            ELSE 0
+         END AS INDICADOR_CONCILIADO
+
+        ,CASE
+            WHEN RC.ESTADO_CONCILIACION = 'Pendiente de Migración'
+                THEN 1
+            ELSE 0
+         END AS INDICADOR_PENDIENTE_MIGRACION
+
+        ,CASE
+            WHEN RC.ESTADO_CONCILIACION = 'Observado'
+                THEN 1
+            ELSE 0
+         END AS INDICADOR_OBSERVADO
+    FROM
+        RESULTADO_CONCILIACION RC
+)
+
+   14. SALIDA FINAL
+SELECT
+     RAZON_SOCIAL           "Razón Social"
+    ,UNIDAD_NEGOCIO         "Unidad de Negocio"
+    ,EXPENSE_REPORT_ID      "ID Informe Expenses"
+    ,EXPENSE_ID             "ID Línea Expenses"
+    ,ID_DISTRIBUCION_EXP    "ID Distribución EXP"
+    ,ID_DISTRIBUCION_AP     "ID Distribución AP"
+    ,NOMBRE_DEL_EMPLEADO    "Nombre del Empleado"
+    ,COLABORADOR_ID         "ID Colaborador"
+    ,NUM_INFORME_DE_GASTOS  "Número Informe de Gastos"
+    ,ESTADO_DEL_INFORME     "Código Estado Informe EXP"
+    ,ESTADO_DEL_INFORME_TXT "Estado Informe EXP"
+    ,FECHA_INFORME          "Fecha Informe"
+    ,FECHA_ENVIO_EXP        "Fecha Envío EXP"
+    ,FECHA_APROBACION_EXP   "Fecha Aprobación EXP"
+    ,LINEA_DE_GASTO         "Línea de Gasto"
+    ,SECUENCIA_DISTRIBUCION_EXP "Secuencia Distribución EXP"
+    ,FECHA_DEL_GASTO_LINEA  "Fecha del Gasto Línea"
+    ,TIPO_DE_GASTO_ID       "ID Tipo de Gasto"
+    ,TIPO_DE_GASTO          "Tipo de Gasto"
+    ,DESCRIPCION_DEL_GASTO  "Descripción del Gasto"
+    ,NOMBRE_COMERCIANTE_EXP "Nombre Comerciante EXP"
+    ,NOMBRE_COMERCIANTE_PROVEEDOR_EXP   "Nombre Comerciante / Proveedor EXP"
+    ,NUMERO_PROVEEDOR_AP    "Número Proveedor AP"
+    ,PROVEEDOR_AP   "Proveedor AP"
+    ,NUMERO_DE_FACTURA_AP   "Número Factura AP"
+    ,TIPO_DOCUMENTO_AP  "Tipo Documento AP"
+    ,ESTADO_FACTURA_AP  "Código Estado Factura AP"
+    ,ESTADO_FACTURA_AP_TXT  "Estado Factura AP"
+    ,ESTADO_CONTABILIZACION_AP  "Estado Contabilización AP"
+    ,ESTADO_PAGO_AP "Estado Pago AP"
+    ,FECHA_FACTURA_AP   "Fecha Factura AP"
+    ,FECHA_CONTABLE_AP  "Fecha Contable AP"
+    ,TO_CHAR(FECHA_CANCELACION_AP, 'DD/MM/YYYY')    "Fecha Cancelación AP"
+    ,MONEDA_INTRODUCIDA_EXP "Moneda Introducida EXP"
+    ,MONEDA_AP   "Moneda AP"
+    ,MONEDA_FUNCIONAL   "Moneda Funcional"
+    ,TO_CHAR(IMPORTE_DISTRIBUCION_EXP,'FM999999999990.00')  "Importe Distribución EXP"
+    ,TO_CHAR(IMPORTE_DISTRIBUCION_AP,'FM999999999990.00') "Importe Distribución AP"
+    ,TO_CHAR(SUBTOTAL_EXP_MONEDA_INTRODUCIDA,'FM999999999990.00') "Subtotal EXP Moneda Introducida"
+    ,TO_CHAR(IMPORTE_TOTAL_EXP_MONEDA_INTRODUCIDA,'FM999999999990.00') "Importe Total EXP Moneda Introducida"
+    ,TO_CHAR(SUBTOTAL_AP_MONEDA_INTRODUCIDA,'FM999999999990.00') "Subtotal AP Moneda Introducida"
+    ,TO_CHAR(IMPORTE_TOTAL_AP_MONEDA_INTRODUCIDA,'FM999999999990.00') "Importe Total AP Moneda Introducida"
+    ,TO_CHAR(IMPORTE_EXP_COMPARABLE,'FM999999999990.00')        "Importe EXP Comparable"
+    ,TO_CHAR(DIFERENCIA_MONEDA_INTRODUCIDA,'FM999999999990.00') "Diferencia Importe"
+    ,TO_CHAR(TIPO_DE_CAMBIO_EXP,'FM999999999990.000000')        "Tipo de Cambio EXP"
+    ,TO_CHAR(TIPO_DE_CAMBIO_AP,'FM999999999990.000000')         "Tipo de Cambio AP"
+    ,TO_CHAR(DIFERENCIA_TIPO_CAMBIO,'FM999999999990.000000')    "Diferencia Tipo de Cambio"
+    ,TO_CHAR(IMPORTE_EXP_MONEDA_FUNCIONAL,'FM999999999990.00')  "Importe EXP Moneda Funcional"
+    ,TO_CHAR(IMPORTE_AP_MONEDA_FUNCIONAL,'FM999999999990.00')   "Importe AP Moneda Funcional"
+    ,TO_CHAR(IMPORTE_EXP_FUNCIONAL_COMPARABLE,'FM999999999990.00') "Importe EXP Funcional Comparable"
+    ,TO_CHAR(DIFERENCIA_MONEDA_FUNCIONAL,'FM999999999990.00')   "Diferencia Moneda Funcional"
+    ,CODIGO_DE_IMPUESTO_EXP                                     "Código de Impuesto EXP"
+    ,TO_CHAR(IMPORTE_IMPUESTO_EXP,'FM999999999990.00')          "Impuesto EXP"
+    ,CODIGO_DE_IMPUESTO_AP                                      "Código de Impuesto AP"
+    ,TO_CHAR(IMPORTE_IMPUESTO_AP,'FM999999999990.00')           "Impuesto AP"
+    ,TO_CHAR(IMPORTE_IMPUESTO_EXP - IMPORTE_IMPUESTO_AP,'FM999999999990.00') "Diferencia Impuesto"
+    ,TO_CHAR(IMPORTE_IMPUESTO_AP_FACTURA,'FM999999999990.00')   "Impuesto AP Factura"
+    ,COMBINACION_CONTABLE_EXP                                   "Combinación Contable EXP"
+    ,COMBINACION_CONTABLE_AP                                    "Combinación Contable AP"
+    ,RESULTADO_CUENTA_CONTABLE                                  "Resultado Cuenta Contable"
+    ,NUMEROS_ANTICIPO                                           "Número Anticipo"
+    ,ESTADO_ANTICIPO                                            "Estado Anticipo"
+    ,TO_CHAR(IMPORTE_ANTICIPO_SOLICITADO,'FM999999999990.00')   "Importe Anticipo Solicitado"
+    ,TO_CHAR(IMPORTE_ANTICIPO_APROBADO,'FM999999999990.00')     "Importe Anticipo Aprobado"
+    ,TO_CHAR(IMPORTE_ANTICIPO_PAGADO,'FM999999999990.00')       "Importe Anticipo Pagado"
+    ,TO_CHAR( IMPORTE_ANTICIPO_APLICADO, 'FM999999999990.00')   "Importe Anticipo Aplicado"
+    ,TO_CHAR(SALDO_ANTICIPO,'FM999999999990.00')                "Saldo Anticipo"
+    ,REFERENCIA_AP_ANTICIPO                                     "Referencia AP Anticipo"
+    ,ESTADO_CONCILIACION                                        "Estado Conciliación"
+    ,MOTIVO_OBSERVACION                                         "Motivo Observación"
+    ,INDICADOR_CONCILIADO                                       "Indicador Conciliado"
+    ,INDICADOR_PENDIENTE_MIGRACION                              "Indicador Pendiente Migración"
+    ,INDICADOR_OBSERVADO                                        "Indicador Observado"
+
+FROM RESULTADO_FINAL
