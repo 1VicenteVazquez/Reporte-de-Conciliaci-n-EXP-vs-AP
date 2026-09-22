@@ -20,31 +20,31 @@ WITH TASAS_IMPUESTO_EXP AS (
     SELECT 'CL_IVA_NO_AFECTO_AP', 0, 'Y' FROM DUAL UNION ALL
     SELECT 'CL_IVA_AP', 19, 'Y' FROM DUAL UNION ALL
     SELECT 'CL_IVA_AP_GRP', 12, 'Y' FROM DUAL
-)
-,ESTADOS_EXPENSE_LOOKUP AS (
+),
+ESTADOS_EXPENSE_LOOKUP AS (
     SELECT DISTINCT LOOKUP_CODE, MEANING
     FROM FND_LOOKUP_VALUES_VL
     WHERE LOOKUP_TYPE = 'EXM_REPORT_STATUS'
-)
-,ESTADOS_AP_LOOKUP AS (
+),
+ESTADOS_AP_LOOKUP AS (
     SELECT DISTINCT LOOKUP_CODE, MEANING
     FROM FND_LOOKUP_VALUES_VL
     WHERE LOOKUP_TYPE IN ('INVOICE STATUS', 'AP_INVOICE_STATUS')
-)
-,PROVEEDOR_POR_FACTURA AS (
+),
+PROVEEDOR_POR_FACTURA AS (
     SELECT AILA.INVOICE_ID, AILA.MERCHANT_NAME,
            ROW_NUMBER() OVER (PARTITION BY AILA.INVOICE_ID ORDER BY AILA.AMOUNT DESC NULLS LAST) AS RN
     FROM AP_INVOICE_LINES_ALL AILA
     WHERE AILA.MERCHANT_NAME IS NOT NULL
-)
-,CUENTA_CONTABLE_POR_GASTO AS (
+),
+CUENTA_CONTABLE_POR_GASTO AS (
     SELECT EED.EXPENSE_ID, EED.CODE_COMBINATION_ID,
            GCC.CONCATENATED_SEGMENTS COMBINACION_CONTABLE_EXP_TXT,
            ROW_NUMBER() OVER (PARTITION BY EED.EXPENSE_ID ORDER BY EED.REIMBURSABLE_AMOUNT DESC NULLS LAST) AS RN
     FROM EXM_EXPENSE_DISTS EED, GL_CODE_COMBINATIONS GCC
     WHERE EED.CODE_COMBINATION_ID = GCC.CODE_COMBINATION_ID(+)
-)
-,LINEAS_PADRE_EXCLUIR AS (
+),
+LINEAS_PADRE_EXCLUIR AS (
     SELECT DISTINCT ITEMIZATION_PARENT_EXPENSE_ID EXPENSE_ID_PADRE
     FROM EXM_EXPENSES
     WHERE ITEMIZATION_PARENT_EXPENSE_ID IS NOT NULL AND ITEMIZATION_PARENT_EXPENSE_ID != -1
@@ -52,8 +52,8 @@ WITH TASAS_IMPUESTO_EXP AS (
     SELECT DISTINCT MERGED_PARENT_EXPENSE_ID EXPENSE_ID_PADRE
     FROM EXM_EXPENSES
     WHERE MERGED_PARENT_EXPENSE_ID IS NOT NULL AND MERGED_PARENT_EXPENSE_ID != -1
-)
-,DISTRIBUCIONES_AP AS (
+),
+DISTRIBUCIONES_AP AS (
     SELECT AID.INVOICE_ID, AID.INVOICE_LINE_NUMBER, AID.DIST_CODE_COMBINATION_ID,
            GCC.CONCATENATED_SEGMENTS COMBINACION_CONTABLE_AP_TXT,
            ROW_NUMBER() OVER (PARTITION BY AID.INVOICE_ID, AID.INVOICE_LINE_NUMBER
@@ -61,66 +61,136 @@ WITH TASAS_IMPUESTO_EXP AS (
     FROM AP_INVOICE_DISTRIBUTIONS_ALL AID, GL_CODE_COMBINATIONS GCC
     WHERE AID.DIST_CODE_COMBINATION_ID = GCC.CODE_COMBINATION_ID(+)
       AND AID.LINE_TYPE_LOOKUP_CODE = 'ITEM'
-)
-,BASE_DATOS AS (
+),
+BASE_DATOS AS (
     SELECT
-         XEP.NAME                                          RAZON_SOCIAL
-        ,HAOUV.NAME                                        UNIDAD_NEGOCIO
-        ,PPNF.FULL_NAME                                    NOMBRE_DEL_EMPLEADO
-        ,EER.EXPENSE_REPORT_NUM                            NUM_INFORME_DE_GASTOS
-        ,EER.EXPENSE_STATUS_CODE                           ESTADO_DEL_INFORME
-        ,EXL.MEANING                                       ESTADO_DEL_INFORME_TXT
+         XEP.NAME                                  RAZON_SOCIAL
+        ,HAOUV.NAME                                UNIDAD_NEGOCIO
+        ,PPNF.FULL_NAME                            NOMBRE_DEL_EMPLEADO
+        ,EER.EXPENSE_REPORT_NUM                    NUM_INFORME_DE_GASTOS
+        ,EER.EXPENSE_STATUS_CODE                   ESTADO_DEL_INFORME
+        ,EXL.MEANING                               ESTADO_DEL_INFORME_TXT
         ,TO_CHAR(EER.FINAL_APPROVAL_DATE, 'DD/MM/YYYY')    FECHA_DE_CREACION
         ,ROW_NUMBER() OVER (PARTITION BY EE.EXPENSE_REPORT_ID ORDER BY EE.EXPENSE_ID) LINEA_DE_GASTO
         ,TO_CHAR(COALESCE(EE.RECEIPT_DATE, EE.START_DATE), 'DD/MM/YYYY') FECHA_DEL_GASTO_LINEA
-        ,ET.NAME                                           TIPO_DE_GASTO
-        ,ET.NAME                                           TIPO_DE_GASTO_TXT
-        ,EE.DESCRIPTION                                    DESCRIPCION_DEL_GASTO
+        ,ET.NAME                                   TIPO_DE_GASTO
+        ,ET.NAME                                   TIPO_DE_GASTO_TXT
+        ,EE.DESCRIPTION                            DESCRIPCION_DEL_GASTO
         ,NVL(APIL.MERCHANT_NAME, NVL(PPF.MERCHANT_NAME, 'PROVEEDOR NO IDENTIFICADO')) NOMBRE_COMERCIANTE_PROVEEDOR_EXP
-        ,AIA.INVOICE_NUM                                   NUMERO_DE_FACTURA_AP
-        ,HZP.PARTY_NAME                                    PROVEEDOR_AP
-        ,AIA.APPROVAL_STATUS                               ESTADO_FACTURA_AP
-        ,APL.MEANING                                       ESTADO_FACTURA_AP_TXT
-        ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')           FECHA_FACTURA_AP
-        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')                FECHA_CONTABLE_AP
-        ,EER.REIMBURSEMENT_CURRENCY_CODE                   MONEDA_INTRODUCIDA_EXP
-        ,ROUND(EE.REIMBURSABLE_AMOUNT, 2)                  IMPORTE_EXP_MONEDA_INTRODUCIDA
-        ,ROUND(APIL.AMOUNT, 2)                             IMPORTE_AP_MONEDA_INTRODUCIDA
-        ,ROUND(EE.REIMBURSABLE_AMOUNT - NVL(APIL.AMOUNT,0), 2) DIFERENCIA_MONEDA_INTRODUCIDA
-        ,EE.EXCHANGE_RATE                                  TIPO_DE_CAMBIO
-        ,GL.CURRENCY_CODE                                  MONEDA_FUNCIONAL
-        ,ROUND(EE.REIMBURSABLE_AMOUNT * NVL(EE.EXCHANGE_RATE,1), 2) IMPORTE_EXP_MONEDA_FUNCIONAL
-        ,ROUND(APIL.AMOUNT * NVL(AIA.EXCHANGE_RATE,1), 2)  IMPORTE_AP_MONEDA_FUNCIONAL
-        ,ROUND(EE.REIMBURSABLE_AMOUNT * NVL(EE.EXCHANGE_RATE,1)
-             - NVL(APIL.AMOUNT,0) * NVL(AIA.EXCHANGE_RATE,1), 2) DIFERENCIA_MONEDA_FUNCIONAL
-        ,EE.TAX_CLASSIFICATION_CODE                        CODIGO_DE_IMPUESTO_EXP
-        ,CASE
-            WHEN TIE.TASA IS NULL THEN NULL
-            WHEN TIE.IMPUESTO_INCLUIDO = 'Y'
-                THEN ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
-            ELSE ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
-         END                                               IMPORTE_IMPUESTO_EXP
-        ,ROUND(NVL((SELECT SUM(ZXL.TAX_AMT) FROM ZX_LINES ZXL
-              WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
-                AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER), 0), 2) IMPORTE_IMPUESTO_AP
-        ,CASE
-            WHEN TIE.TASA IS NULL THEN NULL
-            WHEN TIE.IMPUESTO_INCLUIDO = 'Y'
-                THEN ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
-                     - ROUND(NVL((SELECT SUM(ZXL.TAX_AMT) FROM ZX_LINES ZXL
-                             WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
-                               AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER), 0), 2)
-            ELSE ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
-                     - ROUND(NVL((SELECT SUM(ZXL.TAX_AMT) FROM ZX_LINES ZXL
-                             WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
-                               AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER), 0), 2)
-         END                                               DIFERENCIA_IMPUESTO
-        ,CCPG.COMBINACION_CONTABLE_EXP_TXT                 COMBINACION_CONTABLE_EXP
-        ,DAP.COMBINACION_CONTABLE_AP_TXT                   COMBINACION_CONTABLE_AP
-        ,(SELECT MAX(ZXL.TAX_RATE_CODE) FROM ZX_LINES ZXL
-           WHERE ZXL.APPLICATION_ID = 200 AND ZXL.ENTITY_CODE = 'AP_INVOICES'
-             AND ZXL.TRX_ID = APIL.INVOICE_ID AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER) CODIGO_DE_IMPUESTO_AP
+        ,AIA.INVOICE_NUM                           NUMERO_DE_FACTURA_AP
+        ,HZP.PARTY_NAME                            PROVEEDOR_AP
+        ,AIA.APPROVAL_STATUS                       ESTADO_FACTURA_AP
+        ,APL.MEANING                               ESTADO_FACTURA_AP_TXT
+        ,TO_CHAR(AIA.INVOICE_DATE, 'DD/MM/YYYY')   FECHA_FACTURA_AP
+        ,TO_CHAR(AIA.GL_DATE, 'DD/MM/YYYY')        FECHA_CONTABLE_AP
+        ,EER.REIMBURSEMENT_CURRENCY_CODE           MONEDA_INTRODUCIDA_EXP
 
+        -- === IMPORTE TOTAL EXP (moneda introducida) ===
+        ,ROUND(EE.REIMBURSABLE_AMOUNT, 2) AS IMPORTE_TOTAL_EXP_MONEDA_INTRODUCIDA
+
+        -- === IMPORTE IMPUESTO EXP ===
+        ,CASE
+            WHEN TIE.TASA IS NULL THEN NULL
+            WHEN TIE.IMPUESTO_INCLUIDO = 'Y' THEN
+                 ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
+            ELSE
+                 ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
+         END AS IMPORTE_IMPUESTO_EXP
+
+        -- === SUBTOTAL EXP (total - impuesto, moneda introducida) ===
+        ,ROUND(EE.REIMBURSABLE_AMOUNT, 2)
+         -
+         CASE
+            WHEN TIE.TASA IS NULL THEN 0
+            WHEN TIE.IMPUESTO_INCLUIDO = 'Y' THEN
+                 ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
+            ELSE
+                 ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
+         END AS SUBTOTAL_EXP_MONEDA_INTRODUCIDA
+
+        -- === IMPORTE TOTAL AP (moneda introducida) ===
+        ,ROUND(APIL.AMOUNT, 2) AS IMPORTE_TOTAL_AP_MONEDA_INTRODUCIDA
+
+        -- === IMPORTE IMPUESTO AP ===
+        ,ROUND(NVL((
+            SELECT SUM(ZXL.TAX_AMT)
+            FROM   ZX_LINES ZXL
+            WHERE  ZXL.APPLICATION_ID = 200
+              AND  ZXL.ENTITY_CODE = 'AP_INVOICES'
+              AND  ZXL.TRX_ID = APIL.INVOICE_ID
+              AND  ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+         ), 0), 2) AS IMPORTE_IMPUESTO_AP
+
+        -- === SUBTOTAL AP (total - impuesto, moneda introducida) ===
+        ,ROUND(APIL.AMOUNT, 2)
+         -
+         ROUND(NVL((
+            SELECT SUM(ZXL.TAX_AMT)
+            FROM   ZX_LINES ZXL
+            WHERE  ZXL.APPLICATION_ID = 200
+              AND  ZXL.ENTITY_CODE = 'AP_INVOICES'
+              AND  ZXL.TRX_ID = APIL.INVOICE_ID
+              AND  ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+         ), 0), 2) AS SUBTOTAL_AP_MONEDA_INTRODUCIDA
+
+        -- === DIFERENCIA MONEDA INTRODUCIDA (entre totales) ===
+        ,ROUND(EE.REIMBURSABLE_AMOUNT - NVL(APIL.AMOUNT, 0), 2) AS DIFERENCIA_MONEDA_INTRODUCIDA
+
+        ,EE.EXCHANGE_RATE                          TIPO_DE_CAMBIO
+        ,GL.CURRENCY_CODE                          MONEDA_FUNCIONAL
+
+        -- === IMPORTE TOTAL EXP MONEDA FUNCIONAL ===
+        ,ROUND(EE.REIMBURSABLE_AMOUNT * NVL(EE.EXCHANGE_RATE, 1), 2) AS IMPORTE_TOTAL_EXP_MONEDA_FUNCIONAL
+
+        -- === IMPORTE TOTAL AP MONEDA FUNCIONAL ===
+        ,ROUND(APIL.AMOUNT * NVL(AIA.EXCHANGE_RATE, 1), 2) AS IMPORTE_TOTAL_AP_MONEDA_FUNCIONAL
+
+        -- === DIFERENCIA MONEDA FUNCIONAL ===
+        ,ROUND(
+            EE.REIMBURSABLE_AMOUNT * NVL(EE.EXCHANGE_RATE, 1)
+            - NVL(APIL.AMOUNT, 0) * NVL(AIA.EXCHANGE_RATE, 1),
+         2) AS DIFERENCIA_MONEDA_FUNCIONAL
+
+        ,EE.TAX_CLASSIFICATION_CODE                CODIGO_DE_IMPUESTO_EXP
+
+        -- === DIFERENCIA IMPUESTO ===
+        ,CASE
+            WHEN TIE.TASA IS NULL THEN NULL
+            WHEN TIE.IMPUESTO_INCLUIDO = 'Y' THEN
+                 ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / (100 + TIE.TASA), 2)
+                 - ROUND(NVL((
+                     SELECT SUM(ZXL.TAX_AMT)
+                     FROM   ZX_LINES ZXL
+                     WHERE  ZXL.APPLICATION_ID = 200
+                       AND  ZXL.ENTITY_CODE = 'AP_INVOICES'
+                       AND  ZXL.TRX_ID = APIL.INVOICE_ID
+                       AND  ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+                 ), 0), 2)
+            ELSE
+                 ROUND(EE.REIMBURSABLE_AMOUNT * TIE.TASA / 100, 2)
+                 - ROUND(NVL((
+                     SELECT SUM(ZXL.TAX_AMT)
+                     FROM   ZX_LINES ZXL
+                     WHERE  ZXL.APPLICATION_ID = 200
+                       AND  ZXL.ENTITY_CODE = 'AP_INVOICES'
+                       AND  ZXL.TRX_ID = APIL.INVOICE_ID
+                       AND  ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+                 ), 0), 2)
+         END AS DIFERENCIA_IMPUESTO
+
+        ,CCPG.COMBINACION_CONTABLE_EXP_TXT         COMBINACION_CONTABLE_EXP
+        ,DAP.COMBINACION_CONTABLE_AP_TXT           COMBINACION_CONTABLE_AP
+
+        -- === CÓDIGO DE IMPUESTO AP ===
+        ,(SELECT MAX(ZXL.TAX_RATE_CODE)
+          FROM ZX_LINES ZXL
+          WHERE ZXL.APPLICATION_ID = 200
+            AND ZXL.ENTITY_CODE = 'AP_INVOICES'
+            AND ZXL.TRX_ID = APIL.INVOICE_ID
+            AND ZXL.TRX_LINE_NUMBER = APIL.LINE_NUMBER
+         ) AS CODIGO_DE_IMPUESTO_AP
+
+        -- === DIFERENCIA CUENTA CONTABLE TXT ===
         ,DECODE(
             USERENV('LANGUAGE'),
             'AMERICAN', DECODE(
@@ -145,7 +215,6 @@ WITH TASAS_IMPUESTO_EXP AS (
                 'SIN_CUENTA_EXP', 'Sem Conta Despesa',
                 'Igual'
             ),
-
             DECODE(
                 CASE WHEN CCPG.CODE_COMBINATION_ID IS NOT NULL AND DAP.DIST_CODE_COMBINATION_ID IS NOT NULL AND CCPG.CODE_COMBINATION_ID != DAP.DIST_CODE_COMBINATION_ID THEN 'DIFERENTE'
                      WHEN CCPG.CODE_COMBINATION_ID IS NOT NULL AND DAP.DIST_CODE_COMBINATION_ID IS NULL THEN 'SIN_CUENTA_AP'
@@ -157,26 +226,27 @@ WITH TASAS_IMPUESTO_EXP AS (
                 'SIN_CUENTA_EXP', 'Sin Cuenta EXP',
                 'Igual'
             )
-         )                                               DIFERENCIA_CUENTA_CONTABLE_TXT
+         ) AS DIFERENCIA_CUENTA_CONTABLE_TXT
+
     FROM
-         EXM_EXPENSE_REPORTS                           EER
-        ,EXM_EXPENSES                                  EE
-        ,AP_INVOICES_ALL                               AIA
-        ,AP_INVOICE_LINES_ALL                          APIL
-        ,PROVEEDOR_POR_FACTURA                         PPF
-        ,CUENTA_CONTABLE_POR_GASTO                     CCPG
-        ,PER_PERSON_NAMES_F                            PPNF
-        ,HR_ALL_ORGANIZATION_UNITS_VL                  HAOUV
-        ,FUN_ALL_BUSINESS_UNITS_V                      FABUV
-        ,XLE_ENTITY_PROFILES                           XEP
-        ,GL_LEDGERS                                    GL
-        ,EXM_EXPENSE_TYPES                             ET
-        ,POZ_SUPPLIERS                                 PS
-        ,HZ_PARTIES                                    HZP
-        ,DISTRIBUCIONES_AP                             DAP
-        ,TASAS_IMPUESTO_EXP                            TIE
-        ,ESTADOS_EXPENSE_LOOKUP                        EXL
-        ,ESTADOS_AP_LOOKUP                             APL
+         EXM_EXPENSE_REPORTS                     EER
+        ,EXM_EXPENSES                            EE
+        ,AP_INVOICES_ALL                         AIA
+        ,AP_INVOICE_LINES_ALL                    APIL
+        ,PROVEEDOR_POR_FACTURA                   PPF
+        ,CUENTA_CONTABLE_POR_GASTO               CCPG
+        ,PER_PERSON_NAMES_F                      PPNF
+        ,HR_ALL_ORGANIZATION_UNITS_VL            HAOUV
+        ,FUN_ALL_BUSINESS_UNITS_V                FABUV
+        ,XLE_ENTITY_PROFILES                     XEP
+        ,GL_LEDGERS                              GL
+        ,EXM_EXPENSE_TYPES                       ET
+        ,POZ_SUPPLIERS                           PS
+        ,HZ_PARTIES                              HZP
+        ,DISTRIBUCIONES_AP                       DAP
+        ,TASAS_IMPUESTO_EXP                      TIE
+        ,ESTADOS_EXPENSE_LOOKUP                  EXL
+        ,ESTADOS_AP_LOOKUP                       APL
     WHERE
         EER.EXPENSE_REPORT_NUM = AIA.INVOICE_NUM(+)
         AND EER.ORG_ID = AIA.ORG_ID(+)
@@ -234,13 +304,15 @@ SELECT
     ,FECHA_FACTURA_AP                      "Fecha Factura AP"
     ,FECHA_CONTABLE_AP                     "Fecha Contable AP"
     ,MONEDA_INTRODUCIDA_EXP                "Moneda Introducida EXP"
-    ,IMPORTE_EXP_MONEDA_INTRODUCIDA        "Importe EXP Moneda Introducida"
-    ,IMPORTE_AP_MONEDA_INTRODUCIDA         "Importe AP Moneda Introducida"
+    ,SUBTOTAL_EXP_MONEDA_INTRODUCIDA       "Subtotal EXP Moneda Introducida"
+    ,IMPORTE_TOTAL_EXP_MONEDA_INTRODUCIDA  "Importe Total EXP Moneda Introducida"
+    ,SUBTOTAL_AP_MONEDA_INTRODUCIDA        "Subtotal AP Moneda Introducida"
+    ,IMPORTE_TOTAL_AP_MONEDA_INTRODUCIDA   "Importe Total AP Moneda Introducida"
     ,DIFERENCIA_MONEDA_INTRODUCIDA         "Diferencia Moneda Introducida"
     ,TIPO_DE_CAMBIO                        "Tipo de Cambio"
     ,MONEDA_FUNCIONAL                      "Moneda Funcional"
-    ,IMPORTE_EXP_MONEDA_FUNCIONAL          "Importe EXP Moneda Funcional"
-    ,IMPORTE_AP_MONEDA_FUNCIONAL           "Importe AP Moneda Funcional"
+    ,IMPORTE_TOTAL_EXP_MONEDA_FUNCIONAL    "Importe Total EXP Moneda Funcional"
+    ,IMPORTE_TOTAL_AP_MONEDA_FUNCIONAL     "Importe Total AP Moneda Funcional"
     ,DIFERENCIA_MONEDA_FUNCIONAL           "Diferencia Moneda Funcional"
     ,CODIGO_DE_IMPUESTO_EXP                "Código de Impuesto EXP"
     ,IMPORTE_IMPUESTO_EXP                  "Importe Impuesto EXP"
